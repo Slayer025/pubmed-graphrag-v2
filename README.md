@@ -12,7 +12,7 @@ This project builds a **GraphRAG** pipeline over PubMed scientific abstracts. Th
 - **Evaluation** — measure retrieval quality and answer faithfulness
 - **Demo application** — interactive query interface over the graph
 
-**Phase 1 (complete)** covers data loading, chunking, embedding, and visualization. **Phase 2 (complete)** covers entity extraction and Neo4j-importable graph export. Retrieval and generation are planned for later phases.
+**Phase 1 (complete)** covers data loading, chunking, embedding, and visualization. **Phase 2 (complete)** covers entity extraction and Neo4j-importable graph export. **Phase 3 (complete)** implements graph-enhanced retrieval using offline artifacts. Phases 4–5 remain planned.
 
 ## Environment
 
@@ -146,6 +146,42 @@ Estimates output size before writing; aborts if estimate exceeds 1 GB.
 
 Shared disk-budget utilities: gzip I/O, HF cache configuration, cleanup helpers, size estimation and 1 GB warnings (disk02 policy).
 
+### `src/config.py`
+
+| | |
+|---|---|
+| **Purpose** | Central configuration: Neo4j (optional), embedding model, artifact paths, retrieval hyperparameters |
+| **Input** | Environment variables and defaults |
+| **Output** | `AppConfig` dataclass |
+
+### `src/retriever.py`
+
+| | |
+|---|---|
+| **Purpose** | Graph-enhanced retrieval: query embedding, vector search, graph expansion, deduplication, re-ranking |
+| **Input** | Query string or vector; Phase 1/2 artifacts |
+| **Output** | `list[RetrievalResult]` with `chunk_id`, `article_id`, `text`, `vector_score`, `graph_score`, `combined_score` |
+
+### `src/rag_pipeline.py`
+
+| | |
+|---|---|
+| **Purpose** | End-to-end RAG interface: `retrieve()` + `generate()` |
+| **Input** | Query string |
+| **Output** | `RAGResponse` with query, ranked context, and answer |
+
+Notes:
+- `generate()` is currently a mock/placeholder with an `LLMClient` protocol for future OpenAI/Ollama integration.
+- Phase 3 does **not** require a Neo4j instance; graph expansion is performed offline from `data/graph/*.csv`.
+
+### `scripts/retrieval_debug.py`
+
+| | |
+|---|---|
+| **Purpose** | Manual retrieval test and diagnostic tool |
+| **Input** | Query string, or `--query-chunk-id`, or `--query-vector-file` |
+| **Output** | Ranked retrieval results and optional mock generation |
+
 ## Data Artifacts
 
 | File | Size | Description |
@@ -195,7 +231,17 @@ Shared disk-budget utilities: gzip I/O, HF cache configuration, cleanup helpers,
 
 ### Phase 3 — Retrieval
 
-**Status:** Not started
+**Status:** Complete
+
+- [x] Central configuration (`src/config.py`)
+- [x] Graph-enhanced retriever (`src/retriever.py`)
+- [x] RAG pipeline scaffold with mock generation (`src/rag_pipeline.py`)
+- [x] Manual retrieval debug tool (`scripts/retrieval_debug.py`)
+- [x] Verified artifact alignment (embeddings, chunks, CSV)
+- [x] Vector search over `data/embeddings/semantic_embeddings.npy`
+- [x] Offline graph expansion via `MENTIONS` and `HAS_CHUNK`
+- [x] Re-ranking with configurable `alpha` weighted sum
+- [x] Manual retrieval test executed successfully
 
 ### Phase 4 — LLM generation & evaluation
 
@@ -231,6 +277,122 @@ python -m src.visualize_chunks
 python -m src.create_graph
 ```
 
+## Phase 3 — Graph-enhanced retrieval
+
+Phase 3 retrieval works entirely from existing repository artifacts. No running Neo4j instance is required.
+
+### Retrieval architecture
+
+```
+Query
+  │
+  ▼
+┌─────────────────┐
+│ Query embedding │  sentence-transformers/all-MiniLM-L6-v2
+│ (384-d, L2      │
+│  normalized)    │
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│ Vector search   │  cosine similarity via dot product over
+│ (top_k)         │  data/embeddings/semantic_embeddings.npy
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│ Graph expansion │  depth ≤ 2 using data/graph/mentions.csv
+│ (bounded BFS)   │  and data/graph/has_chunk.csv
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│ Deduplication   │  by chunk_id (keep best depth/score)
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│ Re-ranking      │  combined = α·vector_score + (1‑α)·graph_score
+│                 │  default α = 0.8
+└────────┬────────┘
+         ▼
+   list[RetrievalResult]
+```
+
+### Graph expansion rules
+
+| Depth | Path | Source label | `graph_score` |
+|---|---|---|---|
+| 0 | Vector-retrieved chunk | `vector` | 1.0 |
+| 1 | Same article → chunk | `same_article` | 0.5 |
+| 1 | Shared entity → chunk | `shared_entity` | 0.5 |
+| 2 | Entity → chunk → entity → chunk | `shared_entity` | 0.25 |
+
+Expansion is bounded by:
+
+- `expand_depth` (default 2)
+- `max_entity_degree` (default 500) — skip entities shared by too many chunks
+- `max_expansion_per_entity` (default 100) — deterministic neighbor cap per entity
+- `max_expanded_nodes` (default 2 000) — hard BFS node cap
+
+### Configuration
+
+All retrieval parameters live in `src/config.py` (`RetrievalConfig`):
+
+| Parameter | Default | Description |
+|---|---|---|
+| `top_k` | 10 | Vector search candidates |
+| `expand_depth` | 2 | Maximum graph traversal depth |
+| `max_entity_degree` | 500 | Degree filter for shared entities |
+| `max_expansion_per_entity` | 100 | Max neighbors per entity |
+| `max_expanded_nodes` | 2 000 | Total expansion budget |
+| `alpha` | 0.8 | Weight for vector score in combined ranking |
+| `depth_scores` | (1.0, 0.5, 0.25) | Graph score by depth |
+| `max_results` | 20 | Final ranked result cap |
+
+Neo4j settings are optional (`Neo4jConfig`, default `enabled=False`). They are reserved for future database-backed phases.
+
+### Example commands
+
+Activate the environment first:
+
+```bash
+cd /mnt/d/pubmed-graphrag
+source .venv/bin/activate
+export HF_HOME=/mnt/d/hf_cache_backup
+export PIP_CACHE_DIR=/mnt/d/pip_cache_backup
+```
+
+Run a string query (embeds the query, then retrieves):
+
+```bash
+python scripts/retrieval_debug.py "risk factors for type 2 diabetes" --top-k 5 --max-results 10
+```
+
+Run with mock LLM generation:
+
+```bash
+python scripts/retrieval_debug.py "risk factors for type 2 diabetes" --top-k 5 --max-results 10 --generate
+```
+
+Use a chunk embedding as the query vector (bypasses model loading, useful for cold-start testing):
+
+```bash
+python scripts/retrieval_debug.py --query-chunk-id 0_semantic_0000 --top-k 5 --max-results 10
+```
+
+Use a pre-computed query vector from a `.npy` file:
+
+```bash
+python scripts/retrieval_debug.py --query-vector-file query.npy --top-k 5 --max-results 10
+```
+
+Adjust graph expansion and ranking:
+
+```bash
+python scripts/retrieval_debug.py "diabetes prevention" \
+  --top-k 10 \
+  --max-entity-degree 200 \
+  --alpha 0.7 \
+  --max-results 15
+```
+
 ## Phase 2 import (after Neo4j is running)
 
 Copy `data/graph/*.csv` and `data/graph/schema.cypher` to your Neo4j import directory, then run the Cypher script in Neo4j Browser or `cypher-shell`:
@@ -240,6 +402,14 @@ Copy `data/graph/*.csv` and `data/graph/schema.cypher` to your Neo4j import dire
 ```
 
 No Neo4j server is required to generate the CSV files — `create_graph.py` produces import-ready artifacts offline.
+
+## Limitations
+
+- **Phase 3 is retrieval-only.** `src/rag_pipeline.py` provides a mock LLM client; real generation requires integrating an OpenAI/Ollama-compatible client.
+- **No Neo4j vector index is used.** Embeddings are loaded from `data/embeddings/semantic_embeddings.npy` and searched with NumPy. Neo4j integration remains optional for future phases.
+- **Cold-start latency.** The first string query incurs the cost of importing PyTorch/sentence-transformers and loading the model from disk. On the reference WSL2 machine this can take 2–4 minutes. Subsequent queries in the same process are fast (~0.5–1 s retrieval time).
+- **Graph expansion is bounded but can still add thousands of candidates.** Use `max_entity_degree` and `max_expanded_nodes` to tune recall/latency trade-offs.
+- **No SEMANTIC_SIMILAR edges were added.** Expansion uses only `HAS_CHUNK` and `MENTIONS` relationships from Phase 2.
 
 ## Next Steps
 
@@ -261,7 +431,7 @@ No Neo4j server is required to generate the CSV files — `create_graph.py` prod
 
 ## Handoff Notes
 
-**Current state:** Phase 1 and Phase 2 are complete. The project has a 5000-abstract working set, three chunk strategies persisted as gzip JSONL, L2-normalized semantic embeddings, a cluster visualization, and a Neo4j-importable graph export (137k entities, 258k mentions) generated offline.
+**Current state:** Phase 1, Phase 2, and Phase 3 are complete. The project has a 5000-abstract working set, three chunk strategies persisted as gzip JSONL, L2-normalized semantic embeddings, a cluster visualization, a Neo4j-importable graph export (137k entities, 258k mentions) generated offline, and an offline graph-enhanced retriever.
 
 **Completed source files:**
 
@@ -275,9 +445,17 @@ No Neo4j server is required to generate the CSV files — `create_graph.py` prod
 - `src/entity_extraction.py` — spaCy NER + noun-phrase entity extractor
 - `src/graph_loader.py` — Neo4j CSV node/relationship exporter
 - `src/create_graph.py` — Phase 2 orchestrator
+- `src/config.py` — central configuration
+- `src/retriever.py` — graph-enhanced retriever
+- `src/rag_pipeline.py` — RAG pipeline scaffold with mock generation
+- `scripts/retrieval_debug.py` — manual retrieval test
 
 **Generated artifacts:** See [Data Artifacts](#data-artifacts) above.
 
-**Next implementation target:** Phase 3 — Retrieval. Start by loading the Phase 2 CSV files into a running Neo4j instance, create a vector index on `Chunk.embedding`, and implement a hybrid retriever that combines vector similarity with graph traversal (e.g., expand retrieved chunks via `MENTIONS` to related entities and co-mentioned chunks).
+**Next implementation target:** Phase 4 — real LLM generation and evaluation. Consider:
+1. Adding an OpenAI/Ollama `LLMClient` implementation.
+2. Creating a small evaluation set of PubMed QA pairs.
+3. Measuring retrieval metrics (MRR, nDCG, recall@k) and answer faithfulness.
+4. Optionally loading the CSV files into Neo4j and switching the retriever to Cypher-based expansion.
 
-**Do not yet:** start Neo4j in this phase unless explicitly requested; retrieval, evaluation, and demo are out of scope until the graph is loaded into a database.
+**Do not yet:** redesign the retrieval architecture, add SEMANTIC_SIMILAR edges, or migrate entity extraction to SciSpaCy unless explicitly requested.

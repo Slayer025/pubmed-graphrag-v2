@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
-from src.chunker import ChunkRecord
 from src.storage import (
     WARN_THRESHOLD_BYTES,
     configure_hf_home,
@@ -18,6 +17,9 @@ from src.storage import (
     iter_jsonl_gz,
     log_disk_estimate,
 )
+
+if False:  # noqa: SIM108
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -37,22 +39,31 @@ def _configure_logging() -> None:
         )
 
 
-def create_embedding_model(model_name: str = DEFAULT_MODEL_NAME) -> SentenceTransformer:
+def create_embedding_model(model_name: str = DEFAULT_MODEL_NAME) -> Any:
     """Initialize an embedding model.
 
     Args:
         model_name: Identifier or path of the embedding model to load.
 
     Returns:
-        A loaded embedding model instance.
+        A loaded SentenceTransformer model instance.
     """
+    from sentence_transformers import SentenceTransformer
+
     configure_hf_home()
     log_disk_estimate(estimate_model_download(model_name))
-    logger.info("Loading embedding model %s", model_name)
-    return SentenceTransformer(model_name)
+    logger.info("Loading embedding model %s (local_files_only=True)", model_name)
+    t0 = time.perf_counter()
+    model = SentenceTransformer(model_name, local_files_only=True)
+    logger.info(
+        "Embedding model loaded in %.2f seconds (device=%s)",
+        time.perf_counter() - t0,
+        getattr(model, "device", "unknown"),
+    )
+    return model
 
 
-def load_semantic_chunks(input_path: Path | str = DEFAULT_INPUT_PATH) -> list[ChunkRecord]:
+def load_semantic_chunks(input_path: Path | str = DEFAULT_INPUT_PATH) -> list[dict[str, Any]]:
     """Load semantic chunk records from gzip JSONL."""
     path = Path(input_path)
     logger.info("Loading semantic chunks from %s", path)
@@ -61,7 +72,7 @@ def load_semantic_chunks(input_path: Path | str = DEFAULT_INPUT_PATH) -> list[Ch
     return chunks  # type: ignore[return-value]
 
 
-def extract_chunk_texts(chunks: list[ChunkRecord]) -> list[str]:
+def extract_chunk_texts(chunks: list[dict[str, Any]]) -> list[str]:
     """Return chunk text fields in file order."""
     return [str(chunk["text"]) for chunk in chunks]
 
@@ -103,7 +114,7 @@ def ensure_within_size_limit(estimated_bytes: int, limit_bytes: int = WARN_THRES
 
 def embed_texts(
     texts: list[str],
-    model: SentenceTransformer,
+    model: Any,
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> np.ndarray:
@@ -161,7 +172,7 @@ def load_embeddings(input_path: Path | str = DEFAULT_OUTPUT_PATH) -> np.ndarray:
 
 def embed_chunks(
     chunks: list[dict[str, Any]],
-    model: SentenceTransformer,
+    model: Any,
     text_field: str = "text",
 ) -> list[dict[str, Any]]:
     """Attach embedding vectors to chunk records.
