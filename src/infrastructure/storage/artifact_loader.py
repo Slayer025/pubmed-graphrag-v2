@@ -20,7 +20,7 @@ from src.storage import iter_jsonl_gz
 
 logger = logging.getLogger(__name__)
 
-MIN_VALID_SIZE_DEFAULT = 1024  # 1KB fallback
+MIN_VALID_SIZE_DEFAULT = 1024
 LOCK_RETRY_MS = 300
 LOCK_RETRY_ATTEMPTS = 10
 
@@ -45,214 +45,221 @@ _MIN_VALID_SIZES: dict[str, int] = {
 }
 
 
+@dataclass(frozen=True)
+class _ArtifactPaths:
+    """All filesystem paths for one artifact, resolved once."""
+
+    base: Path
+    ready: Path
+    lock: Path
+    part: Path
+
+
 def _repo_root() -> Path:
     """Return repository root without relying on process cwd."""
     return Path(__file__).resolve().parents[3]
 
 
 def _resolve_artifact_path(path: Path | str) -> Path:
-    """Resolve artifact paths to a stable absolute path (no os.chdir)."""
+    """Normalize to a single absolute resolved path (no relative paths)."""
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = _repo_root() / candidate
     return candidate.resolve()
 
 
-def _ready_path(path: Path) -> Path:
-    return Path(f"{path}.ready")
+def _artifact_paths(path: Path | str) -> _ArtifactPaths:
+    """Build consistent resolved paths for base, .ready, .lock, and .part."""
+    base = _resolve_artifact_path(path)
+    return _ArtifactPaths(
+        base=base,
+        ready=Path(f"{base}.ready").resolve(),
+        lock=Path(f"{base}.lock").resolve(),
+        part=Path(f"{base}.part").resolve(),
+    )
 
 
-def _process_lock_path(path: Path) -> Path:
-    return Path(f"{path}.lock")
+def _relative_key(base: Path) -> str:
+    return base.relative_to(_repo_root()).as_posix()
 
 
-def _part_path(path: Path) -> Path:
-    return Path(f"{path}.part")
+def _effective_min_size(base: Path, min_size: int = MIN_VALID_SIZE_DEFAULT) -> int:
+    return _MIN_VALID_SIZES.get(_relative_key(base), min_size)
 
 
-def _effective_min_size(resolved: Path, min_size: int) -> int:
-    rel = resolved.relative_to(_repo_root()).as_posix()
-    return _MIN_VALID_SIZES.get(rel, min_size)
-
-
-def _read_ready_content(ready_lock: Path) -> str | None:
-    if not ready_lock.exists():
+def _read_ready_content(ready_path: Path) -> str | None:
+    if not ready_path.exists():
         return None
     try:
-        return ready_lock.read_text(encoding="utf-8").strip()
+        return ready_path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
 
 
-def _artifact_is_ready(path: Path | str, min_size: int = MIN_VALID_SIZE_DEFAULT) -> bool:
-    """Return True only when file, size, and .ready marker are all valid."""
-    resolved = _resolve_artifact_path(path)
-    ready_lock = _ready_path(resolved)
-    required_size = _effective_min_size(resolved, min_size)
+def _artifact_is_ready(path: Path | str, min_size: int = MIN_VALID_SIZE_DEFAULT, *, log: bool = True) -> bool:
+    """Single source of truth for artifact readiness."""
+    paths = _artifact_paths(path)
+    required_size = _effective_min_size(paths.base, min_size)
+    reason = "ok"
+    ready = False
 
-    if not resolved.exists():
-        return False
-    if not resolved.is_file():
-        return False
+    if not paths.base.exists():
+        reason = "missing file"
+    elif not paths.base.is_file():
+        reason = "not a file"
+    else:
+        size = os.path.getsize(paths.base)
+        if size <= 0:
+            reason = "empty file"
+        elif size < required_size:
+            reason = f"size {size} < minimum {required_size}"
+        elif not paths.ready.exists():
+            reason = f"missing ready file at {paths.ready}"
+        elif _read_ready_content(paths.ready) != "ok":
+            reason = f"invalid ready content at {paths.ready}"
+        else:
+            ready = True
 
-    size = os.path.getsize(resolved)
-    if size <= 0 or size < required_size:
-        return False
+    if log:
+        status = "TRUE" if ready else "FALSE"
+        logger.info("READY CHECK: %s → %s (%s)", paths.base, status, reason)
+        logger.info("ARTIFACT READY = %s", status)
+        print(f"READY CHECK: {paths.base} → {status}", flush=True)
+        print(f"ARTIFACT READY = {status}", flush=True)
 
-    if not ready_lock.exists():
-        return False
-    if _read_ready_content(ready_lock) != "ok":
-        return False
-
-    return True
+    return ready
 
 
-def _log_skip_download(resolved: Path) -> None:
+def _log_skip_download(paths: _ArtifactPaths) -> None:
+    print("SKIP DOWNLOAD TRIGGERED", flush=True)
     print("SKIP DOWNLOAD", flush=True)
-    logger.info("SKIP DOWNLOAD: artifact validated for %s", resolved)
+    logger.info("SKIP DOWNLOAD TRIGGERED for %s", paths.base)
+    logger.info("SKIP DOWNLOAD: artifact validated for %s", paths.base)
 
 
-def _remove_invalid_artifact(resolved: Path, min_size: int) -> None:
+def _remove_invalid_artifact(paths: _ArtifactPaths) -> None:
     """Remove corrupt or partial artifacts before a fresh download."""
-    if _artifact_is_ready(resolved, min_size):
+    if _artifact_is_ready(paths.base, log=False):
         return
-    for stale in (_part_path(resolved), _ready_path(resolved), resolved):
+    for stale in (paths.part, paths.ready, paths.base):
         if stale.exists():
             try:
                 stale.unlink()
+                logger.info("Removed stale artifact path: %s", stale)
             except OSError as exc:
                 logger.warning("Failed to remove stale artifact %s: %s", stale, exc)
 
 
-def _create_process_lock(lock: Path) -> None:
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("downloading", encoding="utf-8")
+def _create_process_lock(lock_path: Path) -> None:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("downloading", encoding="utf-8")
 
 
-def _remove_process_lock(lock: Path) -> None:
+def _remove_process_lock(lock_path: Path) -> None:
     try:
-        lock.unlink(missing_ok=True)
+        lock_path.unlink(missing_ok=True)
     except OSError as exc:
-        logger.warning("Failed to remove process lock %s: %s", lock, exc)
+        logger.warning("Failed to remove process lock %s: %s", lock_path, exc)
 
 
-def _write_ready_lock(ready_lock: Path) -> None:
-    ready_lock.parent.mkdir(parents=True, exist_ok=True)
-    with open(ready_lock, "w", encoding="utf-8") as handle:
+def _write_ready_marker(ready_path: Path) -> None:
+    ready_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ready_path, "w", encoding="utf-8") as handle:
         handle.write("ok")
         handle.flush()
         os.fsync(handle.fileno())
 
 
-def _wait_for_peer_lock(resolved: Path, min_size: int) -> bool:
-    """Wait while a peer holds .lock; return False to skip download if still locked."""
-    process_lock = _process_lock_path(resolved)
-
-    for _ in range(LOCK_RETRY_ATTEMPTS):
-        if _artifact_is_ready(resolved, min_size):
-            return True
-        if not process_lock.exists():
-            return _artifact_is_ready(resolved, min_size)
-        time.sleep(LOCK_RETRY_MS / 1000.0)
-
-    if _artifact_is_ready(resolved, min_size):
-        return True
-    if process_lock.exists():
-        return False
-    return _artifact_is_ready(resolved, min_size)
-
-
 def download_if_missing(url: str, path: Path | str) -> Path:
     """Download ``url`` to ``path`` when the artifact is not already ready."""
-    resolved = _resolve_artifact_path(path)
-    min_size = _effective_min_size(resolved, MIN_VALID_SIZE_DEFAULT)
+    paths = _artifact_paths(path)
 
-    # Step 0 — early exit
-    if _artifact_is_ready(resolved, min_size):
-        _log_skip_download(resolved)
-        return resolved
+    # Mandatory readiness gate — no bypass.
+    if _artifact_is_ready(paths.base):
+        _log_skip_download(paths)
+        return paths.base
 
-    process_lock = _process_lock_path(resolved)
-    if process_lock.exists():
-        if _wait_for_peer_lock(resolved, min_size):
-            _log_skip_download(resolved)
-            return resolved
-        logger.info("Skipping download; peer lock still active for %s", resolved)
-        if _artifact_is_ready(resolved, min_size):
-            _log_skip_download(resolved)
-            return resolved
-        raise RuntimeError(f"Skipped download; artifact not ready: {resolved}")
+    # A. Peer lock wait
+    if paths.lock.exists():
+        for _ in range(LOCK_RETRY_ATTEMPTS):
+            if _artifact_is_ready(paths.base, log=False):
+                _log_skip_download(paths)
+                return paths.base
+            if not paths.lock.exists():
+                break
+            time.sleep(LOCK_RETRY_MS / 1000.0)
+        if _artifact_is_ready(paths.base, log=False):
+            _log_skip_download(paths)
+            return paths.base
+        if paths.lock.exists():
+            logger.info("Peer lock still active; skipping download for %s", paths.base)
+            return paths.base
 
-    _remove_invalid_artifact(resolved, min_size)
+    _remove_invalid_artifact(paths)
 
-    # Step 1 — acquire lock
-    _create_process_lock(process_lock)
+    # B. Acquire lock
+    _create_process_lock(paths.lock)
+    paths.base.parent.mkdir(parents=True, exist_ok=True)
 
-    part_path = _part_path(resolved)
-    ready_lock = _ready_path(resolved)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-
+    logger.info("DOWNLOAD STARTED: %s", paths.base)
     print("ARTIFACT DOWNLOAD", flush=True)
-    logger.info("ARTIFACT DOWNLOAD: fetching %s -> %s", url, resolved)
+    logger.info("ARTIFACT DOWNLOAD: fetching %s -> %s", url, paths.base)
 
     try:
-        # Step 2 — download safely to .part
         response = requests.get(url, timeout=300, stream=True)
         response.raise_for_status()
 
-        with open(part_path, "wb") as handle:
+        # C. Download to .part
+        with open(paths.part, "wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     handle.write(chunk)
-            # Step 3 — flush safety
+            # D. Flush + fsync
             handle.flush()
             os.fsync(handle.fileno())
 
-        # Step 4 — atomic move (only after fsync)
-        os.replace(part_path, resolved)
-        # Step 5 — mark ready (only after successful replace)
-        _write_ready_lock(ready_lock)
-        logger.info("Downloaded %s (%d bytes)", resolved, os.path.getsize(resolved))
-        return resolved
+        # E. Atomic replace
+        os.replace(paths.part, paths.base)
+        # F. Mark ready only after successful replace
+        _write_ready_marker(paths.ready)
+
+        logger.info("DOWNLOAD COMPLETED: %s (%d bytes)", paths.base, os.path.getsize(paths.base))
+        return paths.base
     except Exception:
-        if part_path.exists():
+        if paths.part.exists():
             try:
-                part_path.unlink()
+                paths.part.unlink()
             except OSError:
                 pass
-        if ready_lock.exists():
+        if paths.ready.exists():
             try:
-                ready_lock.unlink()
+                paths.ready.unlink()
             except OSError:
                 pass
         raise
     finally:
-        # Step 6 — cleanup lock (always)
-        _remove_process_lock(process_lock)
+        # G. Always remove .lock
+        _remove_process_lock(paths.lock)
 
 
 def _ensure_artifact(path: Path | str) -> Path:
     """Ensure a pipeline artifact exists locally, downloading if configured."""
-    resolved = _resolve_artifact_path(path)
-    min_size = _effective_min_size(resolved, MIN_VALID_SIZE_DEFAULT)
-    if _artifact_is_ready(resolved, min_size):
-        _log_skip_download(resolved)
-        return resolved
+    paths = _artifact_paths(path)
 
-    rel = resolved.relative_to(_repo_root()).as_posix()
+    rel = _relative_key(paths.base)
     remote_name = _ARTIFACT_REMOTE_NAMES.get(rel)
     if remote_name is None:
-        raise FileNotFoundError(f"No remote mapping for artifact: {resolved}")
+        raise FileNotFoundError(f"No remote mapping for artifact: {paths.base}")
 
-    base = ARTIFACT_BASE_URL.rstrip("/")
-    if base == "TODO_SET_THIS":
+    base_url = ARTIFACT_BASE_URL.rstrip("/")
+    if base_url == "TODO_SET_THIS":
         raise FileNotFoundError(
-            f"Artifact missing: {resolved}. Set the ARTIFACT_BASE_URL environment variable "
+            f"Artifact missing: {paths.base}. Set the ARTIFACT_BASE_URL environment variable "
             f"to a base URL hosting deployment artifacts, or generate data/ locally."
         )
 
-    url = f"{base}/{remote_name}"
-    return download_if_missing(url, resolved)
+    url = f"{base_url}/{remote_name}"
+    return download_if_missing(url, paths.base)
 
 
 def _download_if_missing() -> tuple[str, ...]:
@@ -268,8 +275,8 @@ def _download_if_missing() -> tuple[str, ...]:
     )
     ensured: list[str] = []
     for path in paths:
-        _ensure_artifact(path)
-        ensured.append(str(_resolve_artifact_path(path)))
+        resolved = _ensure_artifact(path)
+        ensured.append(str(_artifact_paths(resolved).base))
     return tuple(ensured)
 
 
@@ -299,11 +306,11 @@ class ArtifactLoader:
 
         ensure_deployment_artifacts()
 
-        chunks_path = _resolve_artifact_path(artifact.chunks_path)
-        embeddings_path = _resolve_artifact_path(artifact.embeddings_path)
-        mentions_path = _resolve_artifact_path(artifact.mentions_path)
-        has_chunk_path = _resolve_artifact_path(artifact.has_chunk_path)
-        entities_path = _resolve_artifact_path(artifact.entities_path)
+        chunks_path = _artifact_paths(artifact.chunks_path).base
+        embeddings_path = _artifact_paths(artifact.embeddings_path).base
+        mentions_path = _artifact_paths(artifact.mentions_path).base
+        has_chunk_path = _artifact_paths(artifact.has_chunk_path).base
+        entities_path = _artifact_paths(artifact.entities_path).base
 
         chunks = list(iter_jsonl_gz(chunks_path))
         embeddings = np.load(embeddings_path)
