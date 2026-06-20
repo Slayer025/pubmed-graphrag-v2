@@ -24,6 +24,8 @@ MIN_VALID_SIZE_DEFAULT = 1024
 # Remote artifact base URL (Streamlit Cloud). Override via ARTIFACT_BASE_URL.
 ARTIFACT_BASE_URL = os.environ.get("ARTIFACT_BASE_URL", "TODO_SET_THIS")
 
+_ILLEGAL_REPO_PREFIX = "/mount/src/"
+
 _ARTIFACT_REMOTE_NAMES: dict[str, str] = {
     "data/chunks/chunks_semantic.jsonl.gz": "chunks_semantic.jsonl.gz",
     "data/embeddings/semantic_embeddings.npy": "semantic_embeddings.npy",
@@ -46,60 +48,71 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _logical_relative(path: Path | str) -> str:
+def _normalize_relative(path: Path | str) -> str:
     candidate = Path(path)
     if candidate.is_absolute():
         return candidate.relative_to(_repo_root()).as_posix()
     return candidate.as_posix()
 
 
+def _assert_not_repo_write(path: Path) -> None:
+    """Raise if a write target would land inside the watched repo tree."""
+    resolved = str(path.resolve())
+    if resolved.startswith(_ILLEGAL_REPO_PREFIX):
+        raise RuntimeError(f"Illegal write to repo detected: {resolved}")
+
+    repo = str(_repo_root().resolve())
+    if resolved == repo or resolved.startswith(f"{repo}{os.sep}"):
+        raise RuntimeError(f"Illegal write to repo detected: {resolved}")
+
+
 @lru_cache(maxsize=1)
-def _artifact_cache_root() -> Path:
-    """Persistent cache outside the watched repo (never write under repo root)."""
-    candidates: list[str] = []
+def get_cache_dir() -> Path:
+    """Return the external artifact cache root (never under the repo directory)."""
     env_dir = os.environ.get("ARTIFACT_CACHE_DIR", "").strip()
     if env_dir:
-        candidates.append(env_dir)
-    candidates.extend(["/mount/cache/pubmed-graphrag", "/tmp/pubmed-graphrag"])
+        root = Path(env_dir).resolve()
+    else:
+        root = Path("/tmp/pubmed-graphrag").resolve()
 
-    for raw in candidates:
-        root = Path(raw).resolve()
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            logger.info("Using artifact cache directory: %s", root)
-            return root
-        except OSError as exc:
-            logger.warning("Cannot use artifact cache directory %s: %s", root, exc)
+    _assert_not_repo_write(root)
+    root.mkdir(parents=True, exist_ok=True)
+    logger.info("CACHE_DIR=%s", root)
+    print(f"CACHE_DIR={root}", flush=True)
+    return root
 
-    fallback = Path("/tmp/pubmed-graphrag").resolve()
-    fallback.mkdir(parents=True, exist_ok=True)
-    logger.info("Using fallback artifact cache directory: %s", fallback)
-    return fallback
+
+def get_cache_path(relative_path: Path | str) -> Path:
+    """Map a repo-relative artifact path to ``{CACHE_DIR}/data/...``."""
+    rel = _normalize_relative(relative_path)
+    dest = (get_cache_dir() / rel).resolve()
+    _assert_not_repo_write(dest)
+    return dest
 
 
 def _repo_artifact_path(logical: Path | str) -> Path:
-    return (_repo_root() / _logical_relative(logical)).resolve()
-
-
-def _cached_artifact_path(logical: Path | str) -> Path:
-    return (_artifact_cache_root() / _logical_relative(logical)).resolve()
+    return (_repo_root() / _normalize_relative(logical)).resolve()
 
 
 def _min_valid_size(logical_key: str) -> int:
     return _MIN_VALID_SIZES.get(logical_key, MIN_VALID_SIZE_DEFAULT)
 
 
+def _cache_hit(path: Path) -> bool:
+    """True when a cached artifact exists and is non-empty."""
+    return path.is_file() and os.path.getsize(path) > 0
+
+
 def _artifact_file_valid(path: Path, logical_key: str) -> bool:
-    if not path.exists() or not path.is_file():
+    if not _cache_hit(path):
         return False
-    size = os.path.getsize(path)
-    return size > 0 and size >= _min_valid_size(logical_key)
+    return os.path.getsize(path) >= _min_valid_size(logical_key)
 
 
 def resolve_artifact_path(logical: Path | str) -> Path:
     """Return the path to read an artifact from (cache first, then local repo copy)."""
-    logical_key = _logical_relative(logical)
-    cache_path = _cached_artifact_path(logical)
+    logical_key = _normalize_relative(logical)
+    cache_path = get_cache_path(logical)
     if _artifact_file_valid(cache_path, logical_key):
         return cache_path
 
@@ -112,20 +125,18 @@ def resolve_artifact_path(logical: Path | str) -> Path:
 
 def download_if_missing(url: str, logical: Path | str) -> Path:
     """Download to the external cache directory if the artifact file is missing."""
-    logical_key = _logical_relative(logical)
-    dest = _cached_artifact_path(logical)
+    dest = get_cache_path(logical)
 
-    if _artifact_file_valid(dest, logical_key):
-        logger.info("SKIP DOWNLOAD: using cached artifact at %s", dest)
-        print("SKIP DOWNLOAD", flush=True)
+    if _cache_hit(dest):
+        logger.info("USING CACHED ARTIFACT: %s", dest)
         return dest
 
+    _assert_not_repo_write(dest.parent)
     dest.parent.mkdir(parents=True, exist_ok=True)
     part_path = Path(f"{dest}.part").resolve()
+    _assert_not_repo_write(part_path)
 
-    logger.info("DOWNLOAD STARTED: %s", dest)
-    print("ARTIFACT DOWNLOAD", flush=True)
-    logger.info("ARTIFACT DOWNLOAD: fetching %s -> %s", url, dest)
+    logger.info("DOWNLOADING ARTIFACT: %s from %s", dest, url)
 
     try:
         response = requests.get(url, timeout=300, stream=True)
@@ -137,6 +148,9 @@ def download_if_missing(url: str, logical: Path | str) -> Path:
                     handle.write(chunk)
             handle.flush()
             os.fsync(handle.fileno())
+
+        if not part_path.is_file() or os.path.getsize(part_path) == 0:
+            raise OSError(f"Download produced empty file: {part_path}")
 
         os.replace(part_path, dest)
         logger.info("DOWNLOAD COMPLETED: %s (%d bytes)", dest, os.path.getsize(dest))
@@ -152,12 +166,11 @@ def download_if_missing(url: str, logical: Path | str) -> Path:
 
 def _ensure_artifact(logical: Path | str) -> Path:
     """Ensure artifact exists in external cache; never writes into the repo tree."""
-    logical_key = _logical_relative(logical)
-    cache_path = _cached_artifact_path(logical)
+    logical_key = _normalize_relative(logical)
+    cache_path = get_cache_path(logical)
 
-    if _artifact_file_valid(cache_path, logical_key):
-        logger.info("SKIP DOWNLOAD: using cached artifact at %s", cache_path)
-        print("SKIP DOWNLOAD", flush=True)
+    if _cache_hit(cache_path):
+        logger.info("USING CACHED ARTIFACT: %s", cache_path)
         return cache_path
 
     repo_path = _repo_artifact_path(logical)
