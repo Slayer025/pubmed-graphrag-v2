@@ -15,6 +15,10 @@ from src.application.ports import Decomposer, GraphReranker, LLMClient
 from src.application.use_cases.generate_answer import GenerateAnswerUseCase
 from src.application.use_cases.retrieve_documents import RetrieveDocumentsUseCase
 from src.domain.entities.retrieval_result import RetrievalResult
+from src.domain.services.retrieval_dedup_service import (
+    MAX_UNIQUE_CONTEXT_CHUNKS,
+    deduplicate_retrieval_results,
+)
 from src.domain.value_objects.query import Query
 
 if TYPE_CHECKING:
@@ -67,7 +71,7 @@ class RAGPipeline:
         """Return ranked context chunks for the query."""
         search_config = self._to_search_config(config)
         results = self.retrieve_documents.execute(Query(query), search_config)
-        return self._apply_reranker(query, results)
+        return self._finalize_results(query, results, search_config.max_results)
 
     def retrieve_reranked(
         self,
@@ -87,7 +91,7 @@ class RAGPipeline:
         """Retrieve by a pre-computed query vector."""
         search_config = self._to_search_config(config)
         results = self.retrieve_documents.retrieve_by_vector(query_vector, search_config)
-        return self._apply_reranker(query_text, results)
+        return self._finalize_results(query_text, results, search_config.max_results)
 
     def retrieve_decomposed(
         self,
@@ -117,18 +121,25 @@ class RAGPipeline:
                 if existing is None or result.combined_score > existing.combined_score:
                     best_by_chunk[result.chunk_id] = result
 
-        merged = sorted(best_by_chunk.values(), key=lambda r: r.combined_score, reverse=True)
-        return sub_queries, merged[:search_config.max_results]
+        merged = deduplicate_retrieval_results(
+            list(best_by_chunk.values()),
+            max_chunks=min(search_config.max_results, MAX_UNIQUE_CONTEXT_CHUNKS),
+        )
+        return sub_queries, merged
 
-    def _apply_reranker(
+    def _finalize_results(
         self,
         query: str,
         results: list[RetrievalResult],
+        max_results: int,
     ) -> list[RetrievalResult]:
-        """Apply the optional graph reranker."""
-        if self.reranker is None:
-            return results
-        return self.reranker.rerank(query, results)
+        """Apply optional reranking, then deduplicate and cap context."""
+        if self.reranker is not None:
+            results = self.reranker.rerank(query, results)
+        return deduplicate_retrieval_results(
+            results,
+            max_chunks=min(max_results, MAX_UNIQUE_CONTEXT_CHUNKS),
+        )
 
     def generate(
         self,

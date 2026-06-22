@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from src.domain.entities.chunk import Chunk
 from src.domain.entities.retrieval_result import RetrievalResult
+from src.domain.services.retrieval_dedup_service import (
+    MAX_UNIQUE_CONTEXT_CHUNKS,
+    deduplicate_retrieval_results,
+)
 from src.domain.value_objects.retrieval_hyperparameters import RetrievalHyperparameters
 
 
@@ -81,5 +85,11 @@ class ScoreFusionService:
                     source=source,
                 )
 
-        ranked = sorted(candidates.values(), key=lambda r: r.combined_score, reverse=True)
-        return ranked[:max_results]
+        ranked = sorted(
+            candidates.values(),
+            key=lambda r: (-r.combined_score, r.chunk_id),
+        )
+        return deduplicate_retrieval_results(
+            ranked,
+            max_chunks=min(max_results, MAX_UNIQUE_CONTEXT_CHUNKS),
+        )

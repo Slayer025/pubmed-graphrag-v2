@@ -51,13 +51,10 @@ class GraphTraversalService:
         max_depth = min(hyperparameters.expand_depth, len(depth_scores) - 1)
 
         expanded: dict[str, tuple[int, float, str]] = {}
+        visited: set[str] = set(seed_chunk_ids)
         frontier: deque[tuple[str, int, str]] = deque(
             (chunk_id, 0, "vector") for chunk_id in seed_chunk_ids
         )
-        enqueued: set[tuple[str, int]] = set()
-
-        for chunk_id in seed_chunk_ids:
-            enqueued.add((chunk_id, 0))
 
         while frontier and len(expanded) < hyperparameters.max_expanded_nodes:
             chunk_id, depth, source = frontier.popleft()
@@ -75,10 +72,10 @@ class GraphTraversalService:
             article_id = graph.get_chunk_article(chunk_id)
             if article_id:
                 for related_chunk_id in graph.get_article_chunks(article_id):
-                    key = (related_chunk_id, next_depth)
-                    if key not in enqueued:
-                        enqueued.add(key)
-                        frontier.append((related_chunk_id, next_depth, "same_article"))
+                    if related_chunk_id in visited:
+                        continue
+                    visited.add(related_chunk_id)
+                    frontier.append((related_chunk_id, next_depth, "same_article"))
 
             # Shared-entity expansion.
             for entity_id in graph.get_chunk_entities(chunk_id):
@@ -91,9 +88,9 @@ class GraphTraversalService:
                     related = sorted(related)[: hyperparameters.max_expansion_per_entity]
 
                 for related_chunk_id in related:
-                    key = (related_chunk_id, next_depth)
-                    if key not in enqueued:
-                        enqueued.add(key)
-                        frontier.append((related_chunk_id, next_depth, "shared_entity"))
+                    if related_chunk_id in visited:
+                        continue
+                    visited.add(related_chunk_id)
+                    frontier.append((related_chunk_id, next_depth, "shared_entity"))
 
         return expanded
