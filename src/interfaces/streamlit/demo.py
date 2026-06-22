@@ -52,7 +52,11 @@ from src.bootstrap.bootstrap_artifacts import get_preloaded_artifacts
 from src.domain.entities.retrieval_result import RetrievalResult
 from src.domain.value_objects.query import Query
 from src.graph_reranker import GraphReranker
-from src.llm_client import create_llm_client
+from src.llm_client import (
+    LLM_MODE_DISABLED_OPENAI_MISSING_KEY,
+    create_llm_client_with_mode,
+    resolve_effective_llm_mode,
+)
 from src.query_decomposer import DecomposerConfig, QueryDecomposer
 from src.rag_pipeline import RAGPipeline
 
@@ -122,7 +126,7 @@ def _retrieve_results(
     use_decomposer: bool,
 ) -> tuple[list[str], list[RetrievalResult]]:
     if use_decomposer:
-        llm = create_llm_client(llm_client_type)
+        llm = create_llm_client_with_mode(llm_client_type).client
         decomposer = QueryDecomposer(llm=llm, config=DecomposerConfig(enabled=True))
         sub_queries = decomposer.decompose(query)
         if len(sub_queries) <= 1:
@@ -220,13 +224,6 @@ def _openai_api_key_available() -> bool:
     return bool((os.environ.get("OPENAI_API_KEY") or "").strip())
 
 
-def _resolve_llm_client_type(selected_type: str) -> str:
-    """Use mock when OpenAI is selected but credentials are missing."""
-    if selected_type == "openai" and not _openai_api_key_available():
-        return "mock"
-    return selected_type
-
-
 def _render_graph_evidence(graph_repository: Any, results: list[RetrievalResult]) -> None:
     st.subheader("Graph evidence")
     if not results:
@@ -261,7 +258,9 @@ def main() -> int:
     with st.sidebar:
         st.header("Model")
 
-        llm_options = ["mock", "openai"]
+        llm_options = ["mock"]
+        if _openai_api_key_available():
+            llm_options.append("openai")
         if os.environ.get("OLLAMA_URL"):
             llm_options.append("ollama")
 
@@ -276,17 +275,14 @@ def main() -> int:
             "LLM client",
             options=llm_options,
             index=llm_options.index(st.session_state.llm_client_select),
-            help="Select the LLM used for generation. Ollama only appears if OLLAMA_URL is set.",
+            help="Select the LLM used for generation. OpenAI appears only when OPENAI_API_KEY is set.",
             key="llm_client_select",
         )
-        if llm_client_type == "openai" and not _openai_api_key_available():
-            st.warning(
-                "OpenAI selected but API key missing in Streamlit secrets. Using mock client."
-            )
-            if st.session_state.llm_client_select != "mock":
-                st.session_state.llm_client_select = "mock"
-                st.rerun()
-        effective_llm_client_type = _resolve_llm_client_type(llm_client_type)
+        effective_llm_mode = resolve_effective_llm_mode(llm_client_type)
+        logger.info("LLM MODE: %s", effective_llm_mode)
+        st.caption(f"Active LLM mode: `{effective_llm_mode}`")
+        if not _openai_api_key_available():
+            st.caption("Add `OPENAI_API_KEY` in Streamlit secrets to enable OpenAI.")
 
         st.header("Retrieval")
         top_k = st.slider("top_k", 1, 50, 10)
@@ -315,6 +311,12 @@ def main() -> int:
         "max_results": max_results,
     }
 
+    if effective_llm_mode == LLM_MODE_DISABLED_OPENAI_MISSING_KEY:
+        st.warning(
+            "OpenAI key missing. Running in MOCK mode. "
+            "Add OPENAI_API_KEY in Streamlit secrets to enable real answers."
+        )
+
     try:
         pipeline = get_pipeline(HF_HOME)
         base_config = default_search_config()
@@ -342,7 +344,7 @@ def main() -> int:
                 graph_repository,
                 query,
                 search_config,
-                llm_client_type=effective_llm_client_type,
+                llm_client_type=llm_client_type,
                 use_reranker=use_reranker,
                 reranker_beta=reranker_beta,
                 use_decomposer=use_decomposer,
@@ -365,8 +367,12 @@ def main() -> int:
 
         if answer_clicked:
             with st.spinner("Generating answer..."):
-                llm = create_llm_client(effective_llm_client_type)
-                answer = GenerateAnswerUseCase(llm=llm).execute(Query(query), results)
+                llm_selection = create_llm_client_with_mode(llm_client_type)
+                logger.info("LLM MODE: %s", llm_selection.mode)
+                answer = GenerateAnswerUseCase(llm=llm_selection.client).execute(
+                    Query(query),
+                    results,
+                )
             st.subheader("Answer")
             st.markdown(answer)
 
