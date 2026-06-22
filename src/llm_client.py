@@ -90,6 +90,9 @@ _CHUNK_HEADER_RE = re.compile(
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _MOCK_MODE_LABEL = "MODE: RETRIEVAL-ONLY (NO LLM REASONING)"
+_MOCK_TOP_K_CHUNKS = 3
+_MOCK_MIN_TOP_CHUNK_SCORE = 0.55
+_INSUFFICIENT_EVIDENCE = "Insufficient evidence in retrieved context."
 
 
 def _question_terms(question: str) -> set[str]:
@@ -139,65 +142,69 @@ def _lexical_overlap(sentence: str, question_words: set[str]) -> int:
     return len(sentence_words & question_words)
 
 
-def _extract_chunk_sentences(text: str, question: str, *, max_sentences: int = 2) -> list[str]:
-    """Pick 1-2 sentences from a chunk using lexical overlap (deterministic)."""
+def _sentence_score(sentence: str, question: str, question_words: set[str]) -> int:
+    """Score a sentence by query overlap plus lightweight biomedical cues."""
+    overlap = _lexical_overlap(sentence, question_words)
+    if overlap == 0:
+        return 0
+
+    score = overlap * 10
+    if re.search(r"\d", question) and re.search(r"\d", sentence):
+        score += 1
+    return score
+
+
+def _best_sentence_for_chunk(
+    text: str,
+    question: str,
+    question_words: set[str],
+) -> str | None:
+    """Return the single best overlapping sentence for a chunk, or None."""
     sentences = [" ".join(sentence.split()) for sentence in _split_sentences(text) if sentence.strip()]
-    if not sentences:
-        return []
+    if not sentences or not question_words:
+        return None
 
-    question_words = _question_terms(question)
-    if not question_words:
-        return sentences[:1]
-
-    ranked = [
-        (_lexical_overlap(sentence, question_words), index, sentence)
-        for index, sentence in enumerate(sentences)
-    ]
-    ranked.sort(key=lambda item: (-item[0], item[1]))
-
-    if ranked[0][0] == 0:
-        return [ranked[0][2]]
-
-    best_overlap = ranked[0][0]
-    selected: list[str] = []
-    for overlap, _, sentence in ranked:
-        if overlap < best_overlap and selected:
-            break
-        selected.append(sentence)
-        if len(selected) >= max_sentences:
-            break
-    return selected
+    best_sentence: str | None = None
+    best_score = 0
+    best_index = 0
+    for index, sentence in enumerate(sentences):
+        score = _sentence_score(sentence, question, question_words)
+        if score == 0:
+            continue
+        if score > best_score or (score == best_score and index < best_index):
+            best_score = score
+            best_index = index
+            best_sentence = sentence
+    return best_sentence
 
 
 def _select_top_chunks(chunks: list[tuple[str, float, str]]) -> list[tuple[str, float, str]]:
-    """Select top 3-5 chunks by retrieval ``combined_score`` (deterministic)."""
-    if not chunks:
-        return []
-    limit = min(5, len(chunks))
-    if len(chunks) >= 3:
-        limit = max(3, limit)
-    return sorted(chunks, key=lambda item: (-item[1], item[0]))[:limit]
+    """Select top 3 chunks by retrieval ``combined_score`` (deterministic)."""
+    return sorted(chunks, key=lambda item: (-item[1], item[0]))[:_MOCK_TOP_K_CHUNKS]
+
+
+def _insufficient_evidence_answer() -> str:
+    return f"{_MOCK_MODE_LABEL}\n\nAnswer:\n- {_INSUFFICIENT_EVIDENCE}\n\nSources:"
 
 
 def _build_extractive_answer(question: str, chunks: list[tuple[str, float, str]]) -> str:
-    """Build a retrieval-only extractive answer from top-ranked chunks."""
+    """Build a strict retrieval-only extractive answer from top-3 chunks."""
     ranked_chunks = _select_top_chunks(chunks)
+    if not ranked_chunks or ranked_chunks[0][1] < _MOCK_MIN_TOP_CHUNK_SCORE:
+        return _insufficient_evidence_answer()
 
+    question_words = _question_terms(question)
     bullets: list[str] = []
     source_ids: list[str] = []
     for chunk_id, _, text in ranked_chunks:
-        for sentence in _extract_chunk_sentences(text, question, max_sentences=2):
-            bullets.append(sentence)
+        sentence = _best_sentence_for_chunk(text, question, question_words)
+        if sentence is None:
+            continue
+        bullets.append(f"{sentence} ({chunk_id})")
         source_ids.append(chunk_id)
 
     if not bullets:
-        fallback_sources = "\n".join(f"- {chunk_id}" for chunk_id, _, _ in ranked_chunks)
-        return (
-            f"{_MOCK_MODE_LABEL}\n\n"
-            "Answer:\n"
-            "- No extractive summary could be built from the retrieved context.\n\n"
-            f"Sources:\n{fallback_sources}"
-        )
+        return _insufficient_evidence_answer()
 
     answer_lines = "\n".join(f"- {bullet}" for bullet in bullets)
     source_lines = "\n".join(f"- {chunk_id}" for chunk_id in source_ids)
