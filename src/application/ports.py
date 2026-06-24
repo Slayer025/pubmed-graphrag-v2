@@ -56,6 +56,14 @@ class ChunkRepository(Protocol):
         ...
 
 
+class SparseRetriever(Protocol):
+    """Port for keyword/sparse retrieval (e.g., BM25)."""
+
+    def search(self, query: str, top_k: int) -> list[tuple[str, float]]:
+        """Return top-k (chunk_id, score) pairs for the query."""
+        ...
+
+
 class LLMClient(Protocol):
     """Port for text-generation backends."""
 

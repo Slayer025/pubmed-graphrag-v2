@@ -74,6 +74,10 @@ class RetrievalConfig:
     # Graph score by traversal depth
     depth_scores: tuple[float, float, float] = (1.0, 0.5, 0.25)
 
+    # Hybrid retrieval settings
+    use_hybrid: bool = False
+    rrf_k: int = 20
+
     # Final result cap
     max_results: int = 20
 

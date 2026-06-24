@@ -21,11 +21,13 @@ from src.application.use_cases.retrieve_documents import RetrieveDocumentsUseCas
 from src.config import AppConfig
 from src.embeddings import create_embedding_model
 from src.graph_reranker import GraphReranker
+from src.domain.services.rrf_fusion_service import RRFFusionService
 from src.infrastructure.embeddings.sentence_transformer_service import (
     LazySentenceTransformerEmbeddingService,
     SentenceTransformerEmbeddingService,
 )
 from src.infrastructure.graph.in_memory_graph_repository import InMemoryGraphRepository
+from src.infrastructure.retrievers.bm25_retriever import BM25Retriever
 from src.infrastructure.storage.artifact_loader import LoadedArtifacts
 from src.infrastructure.storage.chunk_repository import InMemoryChunkRepository
 from src.infrastructure.storage.pure_build import pure_build_guard
@@ -66,6 +68,11 @@ def _build_embedding_service(config: AppConfig | None = None) -> SentenceTransfo
     )
 
 
+def _build_sparse_retriever(chunks: list[dict[str, Any]]) -> BM25Retriever:
+    """Build the BM25 sparse retriever directly from chunk records."""
+    return BM25Retriever(chunks)
+
+
 def _build_retrieve_documents(config: AppConfig | None = None) -> RetrieveDocumentsUseCase:
     """Build the main retrieval use case with cached artifacts and model."""
     cfg = config or AppConfig.default()
@@ -79,12 +86,15 @@ def _build_retrieve_documents(config: AppConfig | None = None) -> RetrieveDocume
         artifacts.chunks,
     )
     chunk_repository = InMemoryChunkRepository(artifacts.chunks)
+    sparse_retriever = _build_sparse_retriever(artifacts.chunks)
 
     return RetrieveDocumentsUseCase(
         embedding_service=embedding_service,
         vector_store=vector_store,
         graph_repository=graph_repository,
         chunk_repository=chunk_repository,
+        sparse_retriever=sparse_retriever,
+        rrf_fusion_service=RRFFusionService(),
     )
 
 
@@ -117,11 +127,14 @@ def build_pipeline(
             artifacts.chunks,
         )
         chunk_repository = InMemoryChunkRepository(artifacts.chunks)
+        sparse_retriever = _build_sparse_retriever(artifacts.chunks)
         retrieve_documents = RetrieveDocumentsUseCase(
             embedding_service=embedding_service,
             vector_store=NumpyVectorStore(artifacts.chunks, artifacts.embeddings),
             graph_repository=graph_repository,
             chunk_repository=chunk_repository,
+            sparse_retriever=sparse_retriever,
+            rrf_fusion_service=RRFFusionService(),
         )
         return RAGPipeline(
             retrieve_documents=retrieve_documents,

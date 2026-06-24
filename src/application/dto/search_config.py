@@ -23,6 +23,8 @@ class SearchConfig:
     max_expanded_nodes: int = 2_000
     alpha: float = 0.8
     depth_scores: tuple[float, float, float] = (1.0, 0.5, 0.25)
+    use_hybrid: bool = False
+    rrf_k: int = 20
     max_results: int = 20
 
     @classmethod
@@ -37,6 +39,8 @@ class SearchConfig:
             alpha=config.alpha,
             depth_scores=config.depth_scores,
             max_results=config.max_results,
+            use_hybrid=getattr(config, "use_hybrid", False),
+            rrf_k=getattr(config, "rrf_k", 60),
         )
 
     def to_hyperparameters(self) -> RetrievalHyperparameters:

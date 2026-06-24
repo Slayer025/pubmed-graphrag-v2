@@ -329,6 +329,11 @@ def main() -> int:
         max_entity_degree = st.slider("max_entity_degree", 10, 2000, 500)
         alpha = st.slider("alpha (vector weight)", 0.0, 1.0, 0.8, step=0.05)
         max_results = st.slider("max_results", 1, 50, 20)
+        use_hybrid = st.checkbox(
+            "Enable Hybrid Retrieval (Dense + BM25 + RRF)",
+            value=False,
+            help="When enabled, dense vector search and BM25 keyword search are fused with Reciprocal Rank Fusion.",
+        )
 
         st.header("Phase 5 options")
         use_decomposer = st.checkbox("Enable query decomposition", value=False)
@@ -348,6 +353,7 @@ def main() -> int:
         "max_entity_degree": max_entity_degree,
         "alpha": alpha,
         "max_results": max_results,
+        "use_hybrid": use_hybrid,
     }
 
     try:
