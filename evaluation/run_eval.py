@@ -33,6 +33,7 @@ configure_environment()
 from src.application.dto.search_config import SearchConfig
 from src.bootstrap import bootstrap_pipeline
 from src.bootstrap.bootstrap_artifacts import bootstrap_artifacts
+from src.domain.value_objects.query import Query
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -43,6 +44,7 @@ logging.basicConfig(
 QUERIES_PATH = Path(__file__).parent / "queries.jsonl"
 DENSE_RESULTS_PATH = Path(__file__).parent / "results_dense_only.jsonl"
 HYBRID_RESULTS_PATH = Path(__file__).parent / "results_hybrid.jsonl"
+ROUTED_RESULTS_PATH = Path(__file__).parent / "results_routed.jsonl"
 SUMMARY_PATH = Path(__file__).parent.parent / "outputs" / "retrieval_improvement_summary.json"
 
 
@@ -72,8 +74,13 @@ def _evaluate_query(
     expected_article_id = str(query["expected_article_id"])
 
     start = time.perf_counter()
-    results = pipeline.retrieve(question, search_config)
+    raw_results = pipeline.retrieve_documents.execute(Query(question), search_config)
     latency_ms = (time.perf_counter() - start) * 1000
+
+    if isinstance(raw_results, tuple):
+        results, classification, strategy = raw_results
+    else:
+        results, classification, strategy = raw_results, {}, {}
 
     top_10 = results[:10]
     correct_ranks = [
@@ -88,7 +95,7 @@ def _evaluate_query(
     recall_at_10 = bool(correct_ranks)
     mrr_at_10 = 1.0 / correct_ranks[0] if correct_ranks else 0.0
 
-    return {
+    record = {
         "query_id": str(query["query_id"]),
         "question": question,
         "expected_pubmed_id": str(query["expected_pubmed_id"]),
@@ -109,6 +116,11 @@ def _evaluate_query(
             for rank, result in enumerate(top_10, start=1)
         ],
     }
+    if classification:
+        record["classification"] = classification
+    if strategy:
+        record["strategy"] = strategy
+    return record
 
 
 def _aggregate_metrics(records: list[dict]) -> dict:
@@ -154,10 +166,20 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run dense + hybrid for k=20,30,60 and print a tuning comparison.",
     )
+    parser.add_argument(
+        "--routed",
+        action="store_true",
+        help="Enable Phase 3 query understanding routing during evaluation.",
+    )
     return parser.parse_args()
 
 
-def _build_search_config(*, use_hybrid: bool, rrf_k: int = 60) -> SearchConfig:
+def _build_search_config(
+    *,
+    use_hybrid: bool,
+    rrf_k: int = 60,
+    enable_query_routing: bool = False,
+) -> SearchConfig:
     """Return the evaluation SearchConfig."""
     return SearchConfig(
         top_k=10,
@@ -170,6 +192,7 @@ def _build_search_config(*, use_hybrid: bool, rrf_k: int = 60) -> SearchConfig:
         max_results=20,
         use_hybrid=use_hybrid,
         rrf_k=rrf_k,
+        enable_query_routing=enable_query_routing,
     )
 
 
@@ -177,14 +200,23 @@ def _run_evaluation(
     use_hybrid: bool,
     *,
     rrf_k: int = 60,
+    enable_query_routing: bool = False,
 ) -> tuple[Path, dict, list[dict]]:
     """Run one evaluation pass and return the output path, metrics, and details."""
-    mode_label = "hybrid" if use_hybrid else "dense_only"
-    if use_hybrid:
+    if enable_query_routing:
+        mode_label = "routed"
+        results_path = ROUTED_RESULTS_PATH
+    elif use_hybrid:
+        mode_label = "hybrid"
         results_path = _hybrid_results_path(rrf_k)
     else:
+        mode_label = "dense_only"
         results_path = DENSE_RESULTS_PATH
-    search_config = _build_search_config(use_hybrid=use_hybrid, rrf_k=rrf_k)
+    search_config = _build_search_config(
+        use_hybrid=use_hybrid,
+        rrf_k=rrf_k,
+        enable_query_routing=enable_query_routing,
+    )
 
     cache_dir = os.environ.get("ARTIFACT_CACHE_DIR", "").strip() or str(
         Path(tempfile.gettempdir()) / "pubmed-graphrag"
@@ -218,7 +250,12 @@ def _run_evaluation(
         for record in detailed_results:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    display_label = f"Hybrid RRF (k={rrf_k})" if use_hybrid else "Dense-only"
+    if enable_query_routing:
+        display_label = "Query routed hybrid"
+    elif use_hybrid:
+        display_label = f"Hybrid RRF (k={rrf_k})"
+    else:
+        display_label = "Dense-only"
     print(f"\n{display_label} Retrieval Metrics", flush=True)
     print(f"  Queries evaluated: {metrics['num_queries']}", flush=True)
     print(f"  Recall@5:          {metrics['recall@5']}", flush=True)
@@ -345,6 +382,10 @@ def main() -> int:
 
     if args.compare:
         return _compare_existing()
+
+    if args.routed:
+        _run_evaluation(use_hybrid=True, rrf_k=20, enable_query_routing=True)
+        return 0
 
     if args.hybrid:
         _run_evaluation(use_hybrid=True, rrf_k=args.rrf_k)
