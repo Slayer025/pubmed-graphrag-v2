@@ -26,6 +26,7 @@ class SearchConfig:
     use_hybrid: bool = False
     rrf_k: int = 20
     max_results: int = 20
+    enable_query_routing: bool = False
 
     @classmethod
     def from_retrieval_config(cls, config) -> "SearchConfig":
@@ -41,6 +42,7 @@ class SearchConfig:
             max_results=config.max_results,
             use_hybrid=getattr(config, "use_hybrid", False),
             rrf_k=getattr(config, "rrf_k", 60),
+            enable_query_routing=getattr(config, "enable_query_routing", False),
         )
 
     def to_hyperparameters(self) -> RetrievalHyperparameters:

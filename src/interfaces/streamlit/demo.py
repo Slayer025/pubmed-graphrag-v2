@@ -130,13 +130,25 @@ def _retrieve_results(
     use_reranker: bool,
     reranker_beta: float,
     use_decomposer: bool,
-) -> tuple[list[str], list[RetrievalResult]]:
+) -> tuple[list[str], list[RetrievalResult], dict, dict]:
+    classification: dict = {}
+    strategy: dict = {}
+
+    def _unpack_results(
+        raw: list[RetrievalResult] | tuple[list[RetrievalResult], dict, dict],
+    ) -> tuple[list[RetrievalResult], dict, dict]:
+        if isinstance(raw, tuple):
+            return raw[0], raw[1], raw[2]
+        return raw, {}, {}
+
     if use_decomposer:
         llm = create_llm_client_with_mode(llm_client_type).client
         decomposer = QueryDecomposer(llm=llm, config=DecomposerConfig(enabled=True))
         sub_queries = decomposer.decompose(query)
         if len(sub_queries) <= 1:
-            results = retrieve_documents.execute(Query(query), search_config)
+            results, classification, strategy = _unpack_results(
+                retrieve_documents.execute(Query(query), search_config)
+            )
             results = _maybe_rerank(
                 graph_repository,
                 query,
@@ -144,11 +156,13 @@ def _retrieve_results(
                 enabled=use_reranker,
                 beta=reranker_beta,
             )
-            return sub_queries, results
+            return sub_queries, results, classification, strategy
 
         best_by_chunk: dict[str, RetrievalResult] = {}
         for sub_query in sub_queries:
-            sub_results = retrieve_documents.execute(Query(sub_query), search_config)
+            sub_results, sub_classification, sub_strategy = _unpack_results(
+                retrieve_documents.execute(Query(sub_query), search_config)
+            )
             sub_results = _maybe_rerank(
                 graph_repository,
                 sub_query,
@@ -160,11 +174,15 @@ def _retrieve_results(
                 existing = best_by_chunk.get(result.chunk_id)
                 if existing is None or result.combined_score > existing.combined_score:
                     best_by_chunk[result.chunk_id] = result
+            classification = sub_classification
+            strategy = sub_strategy
 
         merged = sorted(best_by_chunk.values(), key=lambda r: r.combined_score, reverse=True)
-        return sub_queries, merged[: search_config.max_results]
+        return sub_queries, merged[: search_config.max_results], classification, strategy
 
-    results = retrieve_documents.execute(Query(query), search_config)
+    results, classification, strategy = _unpack_results(
+        retrieve_documents.execute(Query(query), search_config)
+    )
     results = _maybe_rerank(
         graph_repository,
         query,
@@ -172,7 +190,7 @@ def _retrieve_results(
         enabled=use_reranker,
         beta=reranker_beta,
     )
-    return [query], results
+    return [query], results, classification, strategy
 
 
 def _results_to_csv(results: list[RetrievalResult]) -> str:
@@ -340,6 +358,28 @@ def _generate_answer_safe(
     return safe_llm_complete(llm, prompt)
 
 
+def _render_query_understanding(
+    classification: dict,
+    strategy: dict,
+) -> None:
+    """Display query classification and routing decisions in the UI."""
+    if not classification and not strategy:
+        return
+
+    with st.expander("🧠 Query Understanding", expanded=True):
+        if classification:
+            st.markdown(f"**Query type:** `{classification.get('query_type', 'general')}`")
+            keywords = classification.get("matched_keywords", [])
+            if keywords:
+                st.markdown(f"**Matched keywords:** `{', '.join(keywords)}`")
+            entities = classification.get("detected_entities", [])
+            if entities:
+                st.markdown(f"**Detected entities:** `{', '.join(entities)}`")
+        if strategy:
+            st.markdown(f"**Selected strategy:** `{strategy.get('strategy_name', 'unknown')}`")
+            st.markdown(f"**Reason:** {strategy.get('reason', '')}")
+
+
 def _render_graph_evidence(graph_repository: Any, results: list[RetrievalResult]) -> None:
     st.subheader("Graph evidence")
     if not results:
@@ -376,6 +416,13 @@ def main() -> int:
 
     with st.sidebar:
         _render_embedding_diagnostics(HF_HOME)
+
+        st.header("Phase 3")
+        enable_query_routing = st.checkbox(
+            "Enable Query Understanding & Routing",
+            value=False,
+            help="When enabled, the query is classified and a retrieval strategy is selected automatically.",
+        )
 
         st.header("Model")
         llm_client_type, llm_selection = _render_llm_mode_sidebar()
@@ -417,6 +464,7 @@ def main() -> int:
         "alpha": alpha,
         "max_results": max_results,
         "use_hybrid": use_hybrid,
+        "enable_query_routing": enable_query_routing,
     }
 
     try:
@@ -441,7 +489,7 @@ def main() -> int:
 
     if retrieve_clicked or answer_clicked:
         with st.spinner("Retrieving..."):
-            sub_queries, results = _retrieve_results(
+            sub_queries, results, classification, strategy = _retrieve_results(
                 retrieve_documents,
                 graph_repository,
                 query,
@@ -453,6 +501,8 @@ def main() -> int:
             )
             if use_decomposer:
                 st.write(f"Sub-queries used ({len(sub_queries)}): {sub_queries}")
+
+        _render_query_understanding(classification, strategy)
 
         st.subheader(f"Retrieved context ({len(results)} chunks)")
         for rank, result in enumerate(results, start=1):

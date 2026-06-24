@@ -71,6 +71,8 @@ class RAGPipeline:
         """Return ranked context chunks for the query."""
         search_config = self._to_search_config(config)
         results = self.retrieve_documents.execute(Query(query), search_config)
+        if isinstance(results, tuple):
+            results, _classification, _strategy = results
         return self._finalize_results(query, results, search_config.max_results)
 
     def retrieve_reranked(
@@ -114,6 +116,8 @@ class RAGPipeline:
 
         for sub_query in sub_queries:
             sub_results = self.retrieve_documents.execute(Query(sub_query), search_config)
+            if isinstance(sub_results, tuple):
+                sub_results, _classification, _strategy = sub_results
             if apply_reranker and self.reranker is not None:
                 sub_results = self.reranker.rerank(sub_query, sub_results)
             for result in sub_results:

@@ -100,6 +100,9 @@ class RetrievalConfig:
     use_hybrid: bool = False
     rrf_k: int = 20
 
+    # Phase 3: query understanding routing
+    enable_query_routing: bool = False
+
     # Final result cap
     max_results: int = 20
 

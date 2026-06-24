@@ -21,6 +21,8 @@ from src.application.use_cases.retrieve_documents import RetrieveDocumentsUseCas
 from src.config import AppConfig
 from src.graph_reranker import GraphReranker
 from src.domain.services.rrf_fusion_service import RRFFusionService
+from src.domain.services.query_classifier import classify_query
+from src.domain.services.strategy_router import route_strategy
 from src.infrastructure.embeddings.remote_embedding_client import create_embedding_client
 from src.infrastructure.graph.in_memory_graph_repository import InMemoryGraphRepository
 from src.infrastructure.retrievers.bm25_retriever import BM25Retriever
@@ -62,6 +64,20 @@ def _build_embedding_service(config: AppConfig | None = None) -> EmbeddingServic
     return result.client
 
 
+class _QueryClassifierPort:
+    """Lightweight adapter exposing the pure domain classifier as a port."""
+
+    def classify_query(self, question: str) -> dict:
+        return classify_query(question)
+
+
+class _StrategyRouterPort:
+    """Lightweight adapter exposing the pure domain router as a port."""
+
+    def route_strategy(self, classification: dict) -> dict:
+        return route_strategy(classification)
+
+
 def _build_sparse_retriever(chunks: list[dict[str, Any]]) -> BM25Retriever:
     """Build the BM25 sparse retriever directly from chunk records."""
     return BM25Retriever(chunks)
@@ -89,6 +105,8 @@ def _build_retrieve_documents(config: AppConfig | None = None) -> RetrieveDocume
         chunk_repository=chunk_repository,
         sparse_retriever=sparse_retriever,
         rrf_fusion_service=RRFFusionService(),
+        query_classifier=_QueryClassifierPort(),
+        strategy_router=_StrategyRouterPort(),
     )
 
 
@@ -133,6 +151,8 @@ def build_pipeline(
             chunk_repository=chunk_repository,
             sparse_retriever=sparse_retriever,
             rrf_fusion_service=RRFFusionService(),
+            query_classifier=_QueryClassifierPort(),
+            strategy_router=_StrategyRouterPort(),
         )
         return RAGPipeline(
             retrieve_documents=retrieve_documents,
