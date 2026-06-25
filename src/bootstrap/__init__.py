@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -74,8 +75,6 @@ def _load_single_index(
     embedding_dim: int,
 ) -> NumpyVectorStore:
     """Load one chunk+embedding index from disk into a NumpyVectorStore."""
-    from pathlib import Path
-
     from src.embeddings import normalize_embeddings
     from src.storage import iter_jsonl_gz
 
