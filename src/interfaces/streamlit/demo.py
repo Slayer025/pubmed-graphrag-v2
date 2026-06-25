@@ -521,7 +521,7 @@ def _render_event_sequence(event_log: list[Any]) -> None:
             "This table proves that **sources and graph evidence arrive before** "
             "the streaming answer finishes generating."
         )
-        st.dataframe(rows, use_container_width=True)
+        st.dataframe(rows, width="stretch")
 
 
 def main() -> int:
