@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -302,20 +303,34 @@ class MockLLMClient:
 
     def complete(self, prompt: str, **kwargs: Any) -> str:
         del kwargs
+        return _sanitize_answer_text("".join(self.stream_answer(prompt)))
+
+    def stream_answer(self, prompt: str, **kwargs: Any):
+        """Yield the mock answer word-by-word to simulate streaming."""
+        del kwargs
         parsed = _parse_answer_prompt(prompt)
         if parsed is not None:
             question, chunks = parsed
-            return _sanitize_answer_text(_build_extractive_answer(question, chunks))
-
-        if "Decompose the following question" in prompt:
+            answer = _build_extractive_answer(question, chunks)
+        elif "Decompose the following question" in prompt:
             question_match = re.search(r"Question:\s*(.+?)\s*\n\nOutput:\s*$", prompt, re.DOTALL)
-            if question_match is not None:
-                return f'["{question_match.group(1).strip()}"]'
+            answer = (
+                f'["{question_match.group(1).strip()}"]'
+                if question_match is not None
+                else '["decompose me"]'
+            )
+        else:
+            answer = (
+                "[MOCK LLM] Provide retrieved context chunks to generate an extractive answer.\n\n"
+                f"Prompt preview:\n{prompt[: self.max_chars]}..."
+            )
 
-        return _sanitize_answer_text(
-            "[MOCK LLM] Provide retrieved context chunks to generate an extractive answer.\n\n"
-            f"Prompt preview:\n{prompt[: self.max_chars]}..."
-        )
+        answer = _sanitize_answer_text(answer)
+        words = answer.split(" ")
+        for index, word in enumerate(words):
+            token = word if index == len(words) - 1 else word + " "
+            yield token
+            time.sleep(0.05)
 
 
 class OpenAIClient:
@@ -362,6 +377,10 @@ class OpenAIClient:
 
     def complete(self, prompt: str, **kwargs: Any) -> str:
         """Request a chat completion; fall back to mock retrieval QA on any failure."""
+        return "".join(self.stream_answer(prompt, **kwargs))
+
+    def stream_answer(self, prompt: str, **kwargs: Any):
+        """Stream a chat completion; fall back to mock retrieval QA on any failure."""
         logger.info("Calling OpenAI-compatible model %s", self.model)
         try:
             messages = [{"role": "user", "content": prompt}]
@@ -370,17 +389,19 @@ class OpenAIClient:
                 messages=messages,
                 max_tokens=kwargs.get("max_tokens", self.max_tokens),
                 temperature=kwargs.get("temperature", self.temperature),
+                stream=True,
             )
-            content = response.choices[0].message.content or ""
-            logger.info("OpenAI response received (%d chars)", len(content))
-            return _sanitize_answer_text(content)
+            for chunk in response:
+                content = chunk.choices[0].delta.content or ""
+                if content:
+                    yield content
         except Exception as exc:
             logger.warning(
                 "OpenAI API call failed (%s: %s); falling back to mock retrieval QA",
                 type(exc).__name__,
                 exc,
             )
-            return MockLLMClient().complete(prompt, **kwargs)
+            yield from MockLLMClient().stream_answer(prompt, **kwargs)
 
 
 class OllamaClient:
@@ -417,23 +438,37 @@ class OllamaClient:
 
     def complete(self, prompt: str, **kwargs: Any) -> str:
         """Generate text using the Ollama ``/api/generate`` endpoint."""
+        return "".join(self.stream_answer(prompt, **kwargs))
+
+    def stream_answer(self, prompt: str, **kwargs: Any):
+        """Stream text using the Ollama ``/api/generate`` endpoint."""
         logger.info("Calling Ollama model %s at %s", self.model, self.url)
         payload = {
             "model": self.model,
             "prompt": prompt,
-            "stream": False,
+            "stream": True,
             "options": kwargs.get("options", self.options),
         }
         response = self._session.post(
             f"{self.url}/api/generate",
             json=payload,
+            stream=True,
             timeout=kwargs.get("timeout", 120),
         )
         response.raise_for_status()
-        data = response.json()
-        content = data.get("response", "")
-        logger.info("Ollama response received (%d chars)", len(content))
-        return content.strip()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            import json
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            content = data.get("response", "")
+            if content:
+                yield content
+        logger.info("Ollama streaming response complete")
 
 
 def _resolve_openai_api_key(api_key: str | None = None) -> str | None:

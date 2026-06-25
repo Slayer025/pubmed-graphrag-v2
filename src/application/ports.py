@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, Protocol
 
 from src.domain.entities.retrieval_result import RetrievalResult
@@ -81,6 +82,10 @@ class LLMClient(Protocol):
 
     def complete(self, prompt: str, **kwargs: Any) -> str:
         """Return a text completion for the given prompt."""
+        ...
+
+    def stream_answer(self, prompt: str, **kwargs: Any) -> Iterator[str]:
+        """Yield text completion tokens/chunks for the given prompt."""
         ...
 
 
