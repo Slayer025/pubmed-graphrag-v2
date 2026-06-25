@@ -12,31 +12,43 @@ This project builds a **GraphRAG** pipeline over PubMed scientific abstracts. Th
 - **Evaluation** — measure retrieval quality and answer faithfulness
 - **Demo application** — interactive query interface over the graph
 
-**Phase 1 (complete)** covers data loading, chunking, embedding, and visualization. **Phase 2 (complete)** covers entity extraction and Neo4j-importable graph export. **Phase 3 (complete)** implements graph-enhanced retrieval using offline artifacts. **Phase 4 (complete)** adds LLM generation and evaluation over PubMedQA. **Phase 5 (complete)** adds an LLM-driven query decomposer, a graph-signal reranker, and a lightweight Streamlit demo.
+> **Project state:** All phases (1–7) are complete and deployed. The current focus is maintenance, evaluation, and incremental UX improvements.
+>
+> **Phase 1** — data loading, chunking, embedding, visualization.  
+> **Phase 2** — entity extraction and Neo4j-importable graph export.  
+> **Phase 3** — graph-enhanced retrieval using offline artifacts.  
+> **Phase 4** — LLM generation and evaluation over PubMedQA.  
+> **Phase 5** — multiple embedding indexes / chunking strategies and query-driven routing.  
+> **Phase 6** — HNSW approximate-nearest-neighbor vector search.  
+> **Phase 7** — streaming sources/citations with event-sequence proof.
 
 ## Environment
 
-**OS:** WSL2 Ubuntu
+**OS:** Windows 11 / WSL2 Ubuntu (deployed to Streamlit Community Cloud)
 
 **Project location:** `/mnt/d/pubmed-graphrag`
 
-**Symlink:** `~/projects/pubmed-graphrag`
+**Repository:** https://github.com/Slayer025/pubmed-graphrag-v2
 
-**Virtual environment:** `/mnt/d/pubmed-graphrag/.venv`
+**Streamlit Cloud URL:** https://pubmed-graphrag-kamfpkughsfmstpcrv8r23.streamlit.app/
 
-**Python version:** 3.14.4
+**Virtual environments:**
+- Linux/WSL: `/mnt/d/pubmed-graphrag/.venv` (Python 3.14)
+- Windows: `/mnt/d/pubmed-graphrag/.venv_win` (Python 3.10)
+
+**Python version (Streamlit Cloud):** 3.11.9 (pinned in `runtime.txt`)
 
 Activate the environment before running commands:
 
 ```bash
-source /mnt/d/pubmed-graphrag/.venv/bin/activate
-export HF_HOME=/mnt/d/hf_cache_backup
-export PIP_CACHE_DIR=/mnt/d/pip_cache_backup
+# Windows PowerShell
+.venv_win\Scripts\activate
+
+# WSL/Linux
+source .venv/bin/activate
 ```
 
-**HF cache:** `HF_HOME=/mnt/d/hf_cache_backup`
-
-**Pip cache:** `PIP_CACHE_DIR=/mnt/d/pip_cache_backup`
+**HF cache:** `HF_HOME=/tmp/hf_cache` (set automatically by `configure_environment()`)
 
 ## Dataset
 
@@ -309,7 +321,35 @@ Notes:
 - [x] End-to-end Phase 4 runner (`scripts/run_evaluation.py`)
 - [x] Evaluation notebook (`notebooks/phase4_evaluation.ipynb`)
 
-### Phase 5 — Demo application
+### Phase 5 — Multiple Embedding Indexes
+
+**Status:** Complete
+
+- [x] Offline builders for `fixed`, `sentence`, and `semantic` indexes (`scripts/build_indexes.py`, `scripts/build_hnsw_indexes.py`)
+- [x] `MultiIndexVectorStore` and `SwitchableVectorStore` adapters
+- [x] Query-driven index routing in `src/domain/services/strategy_router.py`
+- [x] Streamlit controls for multi-index routing
+
+### Phase 6 — HNSW Search
+
+**Status:** Complete
+
+- [x] hnswlib-based approximate nearest neighbor indexes built offline
+- [x] Runtime HNSW/NumPy switching via `SwitchableVectorStore`
+- [x] Exact cosine re-scoring to preserve recall
+- [x] GitHub Release `v2.1-hnsw` with all 16 artifacts
+
+### Phase 7 — Streaming Sources / Citations
+
+**Status:** Complete
+
+- [x] `StreamEvent` domain model with timestamps
+- [x] `RetrieveAndGenerateStreamUseCase` (generator-based)
+- [x] LLM `stream_answer()` for Mock, OpenAI, and Ollama clients
+- [x] Streamlit streaming UI with live sources, graph evidence, and answer tokens
+- [x] "🕒 Event Sequence" proof table showing sources arrive before the answer finishes
+
+### Demo application
 
 **Status:** Complete
 
@@ -324,38 +364,50 @@ Notes:
 |---|---|
 | `src/query_decomposer.py` | Decompose complex questions into LLM-generated sub-questions; falls back to the original query on failure. |
 | `src/graph_reranker.py` | Re-rank `RetrievalResult` lists using graph connectivity signals (shared entities, connected chunks, inverse entity degree). Optional Neo4j GDS PageRank when a graph is loaded. |
+| `src/application/use_cases/retrieve_and_generate_stream.py` | Generator-based streaming retrieve-and-generate use case. |
+| `src/domain/entities/stream_events.py` | Streaming event dataclasses (RetrievalStarted, ChunksFound, GraphEvidenceFound, TextChunkEvent, StreamComplete). |
 | `scripts/demo.py` | Lightweight Streamlit UI for interactive retrieval and answer generation. |
-| `tests/test_query_decomposer.py` | Unit tests for decomposition parsing and fallback behavior. |
-| `tests/test_graph_reranker.py` | Unit tests for graph re-ranking signals. |
 
-**Notes:**
-- Query decomposition and graph re-ranking are **opt-in** and default to disabled.
-- `src.retriever` and `src.evaluation` are unchanged; all existing Phase 4 commands still work.
-- The graph reranker is a post-processor on `RetrievalResult` lists and does not replace the retriever's built-in scoring.
+## Demo
 
-## Phase 5 — Demo
-
-Start the Streamlit demo after installing Phase 5 dependencies:
+Start the Streamlit demo after installing dependencies:
 
 ```bash
 cd /mnt/d/pubmed-graphrag
-source .venv/bin/activate
-pip install -r requirements.txt
-
-export OPENAI_API_KEY=sk-...      # optional, for OpenAI generation/decomposition
-export LLM_MODEL=gpt-3.5-turbo    # optional
-export OLLAMA_URL=http://localhost:11434  # optional, for Ollama
-
+# Windows
+.venv_win\Scripts\activate
 streamlit run scripts/demo.py
+
+# WSL/Linux
+source .venv/bin/activate
+streamlit run scripts/demo.py
+```
+
+Configure secrets via `.streamlit/secrets.toml` or environment variables:
+
+```toml
+[llm]
+openai = "sk-..."
+
+[embedding]
+provider = "huggingface_api"   # or "local" / "remote_http"
+hf_api_token = "hf_..."
+model = "sentence-transformers/all-MiniLM-L6-v2"
+
+[app]
+artifact_base_url = "https://github.com/<owner>/<repo>/releases/download/v2.1-hnsw"
 ```
 
 The demo runs locally in a browser and supports:
 
 * Mock, OpenAI, and Ollama LLM clients
-* Adjustable retrieval parameters (`top_k`, `expand_depth`, `alpha`, `max_results`)
+* Dense, hybrid (BM25 + RRF), HNSW, multi-index, and routed retrieval
+* Metadata-aware entity-label boosting
+* Adjustable retrieval parameters
 * Optional LLM-driven query decomposition
 * Optional graph-signal re-ranking
 * Optional Neo4j GDS PageRank (requires a running Neo4j graph named `pubmed-graph`)
+* Streaming mode with sources/citations and event-sequence proof
 
 ## Commands
 
@@ -385,7 +437,7 @@ python -m src.create_graph
 
 ## Phase 3 — Graph-enhanced retrieval
 
-Phase 3 retrieval works entirely from existing repository artifacts. No running Neo4j instance is required.
+Retrieval works entirely from existing repository artifacts. No running Neo4j instance is required.
 
 ### Retrieval architecture
 
@@ -553,24 +605,33 @@ Copy `data/graph/*.csv` and `data/graph/schema.cypher` to your Neo4j import dire
 
 No Neo4j server is required to generate the CSV files — `create_graph.py` produces import-ready artifacts offline.
 
+. **Mock LLM "Insufficient evidence" with hybrid mode** — FIXED. Threshold was lowered from 0.55 to 0.05 so normal retrieval scores produce extractive answers. Real LLM still recommended for generative answers.
+
+2. **HuggingFace Inference endpoint deprecation** — FIXED. Updated `DEFAULT_HF_API_URL` to `https://router.huggingface.co/hf-inference/models` and appended `/pipeline/feature-extraction` to the request path.
+
+3. **Query classifier is conservative** — 30/40 evaluation queries classified as "general". Architecture proven; needs LLM-based classifier for better accuracy.
+
+4. **Metadata boost metrics unchanged** — Evaluation queries don't contain entity-label keywords (gene, drug, disease). Architecture proven; needs targeted query set to show effect.
+
+5. **Secret leakage** — FIXED. Added `scrub_secrets()` utility, hid `HF_API_TOKEN` from `EmbeddingConfig` repr, and scrubbed tokens from logs, errors, and UI output.
+
 ## Limitations
 
-- **Phase 5 is a demo layer.** `src/rag_pipeline.py` now supports optional query decomposition and graph re-ranking, but both default to disabled. The core retrieval and evaluation logic is unchanged.
-- **No Neo4j vector index is used.** Embeddings are loaded from `data/embeddings/semantic_embeddings.npy` and searched with NumPy. Neo4j integration remains optional for future phases.
-- **Cold-start latency.** The first string query incurs the cost of importing PyTorch/sentence-transformers and loading the model from disk. On the reference WSL2 machine this can take 2–4 minutes. Subsequent queries in the same process are fast (~0.5–1 s retrieval time).
+- **No Neo4j vector index is used.** Embeddings are loaded from `data/embeddings/*.npy` and searched with NumPy / HNSW. Neo4j integration remains optional for future phases.
+- **Cold-start latency.** The first string query incurs the cost of importing PyTorch/sentence-transformers and loading the model from disk. This can take 10–30 seconds on a warm Streamlit Cloud container or 2–4 minutes locally. Subsequent queries in the same process are fast (~0.5–1 s retrieval time).
 - **Graph expansion is bounded but can still add thousands of candidates.** Use `max_entity_degree` and `max_expanded_nodes` to tune recall/latency trade-offs.
 - **No SEMANTIC_SIMILAR edges were added.** Expansion uses only `HAS_CHUNK` and `MENTIONS` relationships from Phase 2.
 - **Query decomposition requires a working LLM.** The deterministic fallback returns the original query if the LLM fails.
 - **Graph reranker PageRank requires Neo4j GDS.** Without it, the reranker falls back to offline connectivity heuristics.
+- **HNSW requires `hnswlib`, which has no Windows wheel.** Local Windows development falls back to NumPy search; Linux deployments (Streamlit Cloud) use HNSW when `use_hnsw=True`.
 
 ## Next Steps
 
-1. **Neo4j setup** — Docker or local instance; load `data/graph/*.csv` with `schema.cypher`
-2. **Vector index** — create a Neo4j vector index over `Chunk.embedding` (or keep an external FAISS/Annoy index)
-3. **Graph-enhanced retrieval** — hybrid vector + graph traversal
-4. **LLM integration** — grounded answer generation
-5. **Evaluation** — retrieval metrics, faithfulness benchmarks
-6. **Demo** — query UI over the graph ✅ completed with Streamlit
+1. **Faithfulness evaluation** — add answer-level metrics (consistency with retrieved context)
+2. **LLM-based query classifier** — replace keyword classifier with a small LLM or fine-tuned model
+3. **Citation extraction** — link answer sentences to the chunks they summarize
+4. **Production LLM backend** — move from mock to OpenAI / Ollama for generative answers
+5. **Neo4j-backed retrieval mode** — optional live graph traversal (currently offline CSV only)
 
 ## Constraints
 
@@ -583,7 +644,7 @@ No Neo4j server is required to generate the CSV files — `create_graph.py` prod
 
 ## Handoff Notes
 
-**Current state:** Phases 0–5 are complete. The project has a 5000-abstract working set, three chunk strategies persisted as gzip JSONL, L2-normalized semantic embeddings, a cluster visualization, a Neo4j-importable graph export (137k entities, 258k mentions) generated offline, an offline graph-enhanced retriever, a full Phase 4 evaluation harness over PubMedQA, and a lightweight Streamlit demo with optional LLM-driven query decomposition and graph-signal re-ranking.
+**Current state:** Phases 0–7 are complete and deployed. The project has a 5000-abstract working set, three chunk strategies persisted as gzip JSONL, L2-normalized semantic embeddings, a cluster visualization, a Neo4j-importable graph export (137k entities, 258k mentions) generated offline, an offline graph-enhanced retriever, a full Phase 4 evaluation harness over PubMedQA, a lightweight Streamlit demo, HNSW approximate-nearest-neighbor search, multi-index routing, metadata-aware boosting, and streaming sources/citations with an event-sequence proof.
 
 **Completed source files:**
 

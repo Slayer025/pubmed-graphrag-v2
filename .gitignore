@@ -40,3 +40,6 @@ pip_cache_backup/
 
 build/
 dist/
+
+# Streamlit secrets must never be committed.
+.streamlit/secrets.toml
