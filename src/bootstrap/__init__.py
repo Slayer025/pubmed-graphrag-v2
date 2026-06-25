@@ -36,6 +36,7 @@ from src.infrastructure.storage.pure_build import pure_build_guard
 from src.infrastructure.vector_store.hnsw_vector_store import HnswVectorStore
 from src.infrastructure.vector_store.multi_index_vector_store import MultiIndexVectorStore
 from src.infrastructure.vector_store.numpy_vector_store import NumpyVectorStore
+from src.infrastructure.vector_store.switchable_vector_store import SwitchableVectorStore
 from src.llm_client import create_llm_client
 from src.query_decomposer import DecomposerConfig, QueryDecomposer
 from src.rag_pipeline import RAGPipeline
@@ -127,33 +128,42 @@ def _load_hnsw_index(
     )
 
 
-def _build_single_vector_store(
+def _build_named_vector_stores(
     index_name: str,
     chunks_path: Path,
     embeddings_path: Path,
     hnsw_base_path: Path,
-    use_hnsw: bool,
     ef_search: int,
     embedding_dim: int,
-) -> VectorStore:
-    """Build one named vector store, preferring HNSW when enabled/available."""
-    hnsw_index_path = hnsw_base_path / "data/hnsw" / f"{index_name}_index.bin"
-    if use_hnsw and hnsw_index_path.exists():
-        try:
-            store = _load_hnsw_index(index_name, hnsw_base_path, ef_search=ef_search)
-            logger.info("Loaded %s index with HNSW", index_name)
-            return store
-        except Exception as exc:
-            logger.warning(
-                "Failed to load HNSW index for %s; falling back to NumPy: %s",
-                index_name,
-                exc,
-            )
-    return _load_single_index(
+) -> tuple[NumpyVectorStore, HnswVectorStore | None]:
+    """Build both NumPy and (optionally) HNSW stores for a single index.
+
+    Returns:
+        A tuple of ``(numpy_store, hnsw_store_or_none)``. The HNSW store is
+        ``None`` when the index file is missing or hnswlib cannot load it.
+    """
+    numpy_store = _load_single_index(
         str(chunks_path),
         str(embeddings_path),
         embedding_dim,
     )
+
+    hnsw_index_path = hnsw_base_path / "data/hnsw" / f"{index_name}_index.bin"
+    hnsw_store: HnswVectorStore | None = None
+    if hnsw_index_path.exists():
+        try:
+            hnsw_store = _load_hnsw_index(index_name, hnsw_base_path, ef_search=ef_search)
+            logger.info("Loaded %s index with HNSW", index_name)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load HNSW index for %s; using NumPy only: %s",
+                index_name,
+                exc,
+            )
+    else:
+        logger.info("No HNSW index found for %s; using NumPy only", index_name)
+
+    return numpy_store, hnsw_store
 
 
 def _build_vector_store(
@@ -164,15 +174,11 @@ def _build_vector_store(
 
     The semantic index is always loaded. Additional indexes (fixed, sentence)
     are loaded opportunistically when their files exist in the artifact cache.
-    If only the semantic index is available, a plain ``NumpyVectorStore`` is
-    returned for backwards compatibility and minimal memory use. When multiple
-    indexes are present, they are wrapped in a ``MultiIndexVectorStore`` with
-    ``semantic`` as the default.
-
-    Phase 6: when ``retrieval.use_hnsw`` is ``True`` and a pre-built HNSW
-    ``.bin`` exists for an index, ``HnswVectorStore`` is used instead of
-    ``NumpyVectorStore``. Missing HNSW files fall back to the NumPy store so
-    the pipeline remains robust on ephemeral environments.
+    For every index, both a ``NumpyVectorStore`` and an optional
+    ``HnswVectorStore`` are built and wrapped in a ``SwitchableVectorStore``.
+    The active backend is selected at query time via ``use_hnsw`` in
+    ``SearchConfig``, so the Streamlit UI can toggle HNSW without restarting.
+    Missing HNSW files are ignored and the store falls back to NumPy.
     """
     cfg = config or AppConfig.default()
 
@@ -182,63 +188,76 @@ def _build_vector_store(
 
     cache_root = Path(default_cache_dir()).resolve()
     hnsw_base_path = Path("data").resolve()
-    use_hnsw = cfg.retrieval.use_hnsw
     ef_search = 100  # keep in sync with scripts/build_hnsw_indexes.py defaults
 
-    semantic_store = _build_single_vector_store(
-        "semantic",
-        cache_root / "data/chunks/chunks_semantic.jsonl.gz",
-        cache_root / "data/embeddings/semantic_embeddings.npy",
-        hnsw_base_path,
-        use_hnsw,
-        ef_search,
-        cfg.embedding.embedding_dim,
-    )
-    indexes: dict[str, VectorStore] = {"semantic": semantic_store}
+    numpy_stores: dict[str, VectorStore] = {}
+    hnsw_stores: dict[str, VectorStore] = {}
 
-    optional_indexes = [
-        ("fixed", cache_root / "data/chunks/chunks_fixed.jsonl.gz", cache_root / "data/embeddings/fixed_embeddings.npy"),
-        ("sentence", cache_root / "data/chunks/chunks_sentence.jsonl.gz", cache_root / "data/embeddings/sentence_embeddings.npy"),
+    index_definitions = [
+        (
+            "semantic",
+            cache_root / "data/chunks/chunks_semantic.jsonl.gz",
+            cache_root / "data/embeddings/semantic_embeddings.npy",
+        ),
+        (
+            "fixed",
+            cache_root / "data/chunks/chunks_fixed.jsonl.gz",
+            cache_root / "data/embeddings/fixed_embeddings.npy",
+        ),
+        (
+            "sentence",
+            cache_root / "data/chunks/chunks_sentence.jsonl.gz",
+            cache_root / "data/embeddings/sentence_embeddings.npy",
+        ),
     ]
 
-    for name, chunks_path, embeddings_path in optional_indexes:
+    for name, chunks_path, embeddings_path in index_definitions:
         if not chunks_path.exists() or not embeddings_path.exists():
             logger.info(
                 "Skipping %s index: missing %s or %s", name, chunks_path, embeddings_path
             )
             continue
         try:
-            indexes[name] = _build_single_vector_store(
+            numpy_store, hnsw_store = _build_named_vector_stores(
                 name,
                 chunks_path,
                 embeddings_path,
                 hnsw_base_path,
-                use_hnsw,
                 ef_search,
                 cfg.embedding.embedding_dim,
             )
+            numpy_stores[name] = numpy_store
+            if hnsw_store is not None:
+                hnsw_stores[name] = hnsw_store
             logger.info("Loaded %s index", name)
         except Exception as exc:
             logger.warning("Failed to load %s index: %s", name, exc)
 
     default_index = cfg.retrieval.default_index
-    if default_index not in indexes:
+    if default_index not in numpy_stores:
         logger.warning(
             "Default index '%s' not available; falling back to 'semantic'",
             default_index,
         )
         default_index = "semantic"
 
-    if len(indexes) == 1:
-        logger.info("Vector store: single semantic index")
-        return semantic_store
+    if not numpy_stores:
+        raise RuntimeError("No vector indexes could be loaded")
 
+    switchable = SwitchableVectorStore(
+        hnsw_stores,
+        numpy_stores,
+        default_index=default_index,
+    )
+
+    loaded_hnsw = sorted(hnsw_stores)
     logger.info(
-        "Vector store: multi-index with %s (default=%s)",
-        sorted(indexes),
+        "Vector store: switchable with indexes=%s, hnsw=%s, default=%s",
+        sorted(numpy_stores),
+        loaded_hnsw,
         default_index,
     )
-    return MultiIndexVectorStore(indexes, default_index=default_index)
+    return switchable
 
 
 class _QueryClassifierPort:

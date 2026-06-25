@@ -28,10 +28,13 @@ class VectorStore(Protocol):
         top_k: int,
         *,
         index_name: str | None = None,
+        use_hnsw: bool = False,
     ) -> list[tuple[str, float]]:
         """Return top-k (chunk_id, similarity_score) pairs.
 
         ``index_name`` is optional and may be ignored by single-index stores.
+        ``use_hnsw`` is optional and may be ignored by stores that do not
+        support runtime backend switching.
         """
         ...
 

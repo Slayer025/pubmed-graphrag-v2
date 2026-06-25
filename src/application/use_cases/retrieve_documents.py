@@ -168,7 +168,12 @@ class RetrieveDocumentsUseCase:
 
         logger.info("INDEX ROUTING: index=%s", index_name or "default")
 
-        vector_results = self.vector_search.execute(query, routed_config, index_name=index_name)
+        vector_results = self.vector_search.execute(
+            query,
+            routed_config,
+            index_name=index_name,
+            use_hnsw=routed_config.use_hnsw,
+        )
 
         if not routed_config.use_hybrid or self.sparse_retriever is None:
             logger.info("RETRIEVAL: mode=dense_only")
@@ -220,7 +225,10 @@ class RetrieveDocumentsUseCase:
         if isinstance(query_vector, np.ndarray):
             query_vector = query_vector.tolist()
         vector_results = self.vector_search.search_by_vector(
-            query_vector, config, index_name=index_name
+            query_vector,
+            config,
+            index_name=index_name,
+            use_hnsw=config.use_hnsw,
         )
         seed_ids = {chunk_id for chunk_id, _ in vector_results}
         expanded = self.graph_expand.execute(seed_ids, config)

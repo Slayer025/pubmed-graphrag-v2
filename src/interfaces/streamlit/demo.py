@@ -549,8 +549,14 @@ def main() -> int:
         _render_query_understanding(classification, strategy)
 
         st.subheader(f"Retrieved context ({len(results)} chunks)")
-        if search_config.use_hnsw:
-            st.caption("⚡ HNSW backend enabled")
+        actual_backend = getattr(
+            retrieve_documents.vector_search.vector_store, "last_backend", None
+        )
+        requested_backend = "hnsw" if search_config.use_hnsw else "numpy"
+        if actual_backend:
+            st.caption(f"⚡ Backend: {actual_backend} (requested: {requested_backend})")
+        elif search_config.use_hnsw:
+            st.caption("⚡ HNSW requested")
         if search_config.enable_metadata_boost:
             st.caption("🔬 Metadata boost applied")
         for rank, result in enumerate(results, start=1):

@@ -58,6 +58,7 @@ class MultiIndexVectorStore(VectorStore):
         top_k: int,
         *,
         index_name: str | None = None,
+        use_hnsw: bool = False,
     ) -> list[tuple[str, float]]:
         """Return top-k results from the requested index.
 
@@ -65,6 +66,8 @@ class MultiIndexVectorStore(VectorStore):
             query_vector: Dense query embedding.
             top_k: Number of results to return.
             index_name: Optional index to query.  Falls back to the default.
+            use_hnsw: Forwarded to the selected index if it supports backend
+                switching.  Plain ``VectorStore`` implementations ignore it.
 
         Returns:
             Top-k ``(chunk_id, similarity_score)`` pairs.
@@ -75,4 +78,4 @@ class MultiIndexVectorStore(VectorStore):
             raise ValueError(
                 f"Unknown index '{name}'. Available indexes: {available}"
             )
-        return self.indexes[name].search(query_vector, top_k)
+        return self.indexes[name].search(query_vector, top_k, use_hnsw=use_hnsw)

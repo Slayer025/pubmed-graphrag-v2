@@ -92,11 +92,14 @@ class HnswVectorStore:
         top_k: int,
         *,
         index_name: str | None = None,
+        use_hnsw: bool = False,
     ) -> list[tuple[str, float]]:
         """Return top-k (chunk_id, cosine_similarity) pairs.
 
         ``index_name`` is accepted for API compatibility with multi-index stores
-        but is ignored by this single-index implementation.
+        but is ignored by this single-index implementation. ``use_hnsw`` is
+        accepted for API compatibility with switchable stores but has no effect
+        because this store is already HNSW-backed.
         """
         query = np.asarray(query_vector, dtype=np.float32)
         query_norm = query / (np.linalg.norm(query) + 1e-10)
