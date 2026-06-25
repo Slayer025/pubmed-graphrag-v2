@@ -7,7 +7,7 @@ future phases.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.application.dto.rerank_config import RerankConfig
@@ -43,7 +43,7 @@ class EmbeddingConfig:
     embedding_dim: int = 384
     batch_size: int = 64
     normalize: bool = True
-    api_token: str | None = None
+    api_token: str | None = field(default=None, repr=False)
     service_url: str | None = None
     timeout_seconds: float = 30.0
 

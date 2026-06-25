@@ -29,12 +29,15 @@ import httpx
 import numpy as np
 
 from src.embeddings import create_embedding_model, embed_texts, normalize_embeddings
+from src.infrastructure.utils.secrets import scrub_secrets
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_HF_API_URL = "https://api-inference.huggingface.co/models"
+DEFAULT_REMOTE_RETRIES = 3
+DEFAULT_REMOTE_BACKOFF_SECONDS = 1.0
 
 
 class EmbeddingClientResult:
@@ -132,9 +135,10 @@ class RemoteEmbeddingClient:
 
     def _record_fallback(self, reason: str) -> None:
         """Switch to local mode and record why, without loading the model."""
-        logger.warning("%s", reason)
+        safe_reason = scrub_secrets(reason)
+        logger.warning("%s", safe_reason)
         self._effective_provider = "local"
-        self._fallback_reason = reason
+        self._fallback_reason = safe_reason
 
     def _fallback(self, reason: str) -> None:
         """Record a fallback reason, switch to local mode, and load the model."""
@@ -142,7 +146,7 @@ class RemoteEmbeddingClient:
         try:
             self._load_local_model()
         except Exception as exc:
-            logger.error("Local fallback model failed to load: %s", exc)
+            logger.error("Local fallback model failed to load: %s", scrub_secrets(str(exc)))
             self._local_model = None
 
     def _local_embed(self, texts: list[str]) -> list[list[float]]:
@@ -155,6 +159,45 @@ class RemoteEmbeddingClient:
             vectors = normalize_embeddings(vectors)
         return vectors.tolist()
 
+    @staticmethod
+    def _with_retry(
+        operation: Any,
+        *,
+        retries: int = DEFAULT_REMOTE_RETRIES,
+        backoff_seconds: float = DEFAULT_REMOTE_BACKOFF_SECONDS,
+    ) -> Any:
+        """Run ``operation`` with simple exponential-backoff retry.
+
+        Only transient network errors (connection/DNS/timeout) are retried;
+        HTTP 4xx/5xx and malformed payloads raise immediately.
+        """
+        last_exception: Exception | None = None
+        for attempt in range(retries):
+            try:
+                return operation()
+            except httpx.NetworkError as exc:
+                last_exception = exc
+                logger.warning(
+                    "Remote embedding network error on attempt %d/%d: %s",
+                    attempt + 1,
+                    retries,
+                    scrub_secrets(str(exc)),
+                )
+                if attempt < retries - 1:
+                    time.sleep(backoff_seconds * (2 ** attempt))
+            except httpx.TimeoutException as exc:
+                last_exception = exc
+                logger.warning(
+                    "Remote embedding timeout on attempt %d/%d: %s",
+                    attempt + 1,
+                    retries,
+                    scrub_secrets(str(exc)),
+                )
+                if attempt < retries - 1:
+                    time.sleep(backoff_seconds * (2 ** attempt))
+        assert last_exception is not None
+        raise last_exception
+
     def _huggingface_embed(self, texts: list[str]) -> list[list[float]]:
         """Call the HuggingFace Inference API for embeddings."""
         url = f"{DEFAULT_HF_API_URL}/{self._model_name}"
@@ -163,35 +206,43 @@ class RemoteEmbeddingClient:
             headers["Authorization"] = f"Bearer {self._api_token}"
 
         logger.info("Calling HuggingFace Inference API: %s", url)
-        with httpx.Client(timeout=self._timeout_seconds) as client:
-            response = client.post(
-                url,
-                headers=headers,
-                json={"inputs": texts, "options": {"wait_for_model": True}},
-            )
-            response.raise_for_status()
-            payload = response.json()
 
-        if isinstance(payload, list) and len(payload) == len(texts):
-            return [np.asarray(vec, dtype=np.float32).tolist() for vec in payload]
-        raise RuntimeError(f"Unexpected HuggingFace API response shape: {type(payload)}")
+        def _call() -> list[list[float]]:
+            with httpx.Client(timeout=self._timeout_seconds) as client:
+                response = client.post(
+                    url,
+                    headers=headers,
+                    json={"inputs": texts, "options": {"wait_for_model": True}},
+                )
+                response.raise_for_status()
+                payload = response.json()
+
+            if isinstance(payload, list) and len(payload) == len(texts):
+                return [np.asarray(vec, dtype=np.float32).tolist() for vec in payload]
+            raise RuntimeError(f"Unexpected HuggingFace API response shape: {type(payload)}")
+
+        return self._with_retry(_call)
 
     def _remote_http_embed(self, texts: list[str]) -> list[list[float]]:
         """Call a custom HTTP embedding service."""
         assert self._service_url is not None
         logger.info("Calling remote HTTP embedding service: %s", self._service_url)
-        with httpx.Client(timeout=self._timeout_seconds) as client:
-            response = client.post(
-                self._service_url,
-                json={"texts": texts, "model": self._model_name},
-            )
-            response.raise_for_status()
-            payload = response.json()
 
-        embeddings = payload.get("embeddings") if isinstance(payload, dict) else payload
-        if isinstance(embeddings, list) and len(embeddings) == len(texts):
-            return [np.asarray(vec, dtype=np.float32).tolist() for vec in embeddings]
-        raise RuntimeError(f"Unexpected remote HTTP response shape: {type(payload)}")
+        def _call() -> list[list[float]]:
+            with httpx.Client(timeout=self._timeout_seconds) as client:
+                response = client.post(
+                    self._service_url,
+                    json={"texts": texts, "model": self._model_name},
+                )
+                response.raise_for_status()
+                payload = response.json()
+
+            embeddings = payload.get("embeddings") if isinstance(payload, dict) else payload
+            if isinstance(embeddings, list) and len(embeddings) == len(texts):
+                return [np.asarray(vec, dtype=np.float32).tolist() for vec in embeddings]
+            raise RuntimeError(f"Unexpected remote HTTP response shape: {type(payload)}")
+
+        return self._with_retry(_call)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Return one embedding vector per input text."""
@@ -224,6 +275,7 @@ class RemoteEmbeddingClient:
                     "falling back to local model."
                 )
                 return self._local_embed(texts)
+            logger.error("Embedding failed: %s", scrub_secrets(str(exc)))
             raise
 
     def embed_query(self, query: str) -> list[float]:

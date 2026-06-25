@@ -62,6 +62,7 @@ from src.domain.entities.stream_events import (
 from src.bootstrap.bootstrap_artifacts import get_preloaded_artifacts
 from src.config import AppConfig
 from src.infrastructure.embeddings.remote_embedding_client import create_embedding_client
+from src.infrastructure.utils.secrets import scrub_secrets
 from src.domain.entities.retrieval_result import RetrievalResult
 from src.domain.value_objects.query import Query
 from src.graph_reranker import GraphReranker
@@ -326,10 +327,10 @@ def _render_embedding_diagnostics(hf_home: str) -> None:
         st.markdown(f"**Probe latency:** `{diagnostics['latency_ms']:.1f} ms`")
 
         if diagnostics["fallback_reason"]:
-            st.warning(f"Fallback: {diagnostics['fallback_reason']}")
+            st.warning(f"Fallback: {scrub_secrets(diagnostics['fallback_reason'])}")
 
         if diagnostics["error"]:
-            st.error(f"Probe failed: {diagnostics['error']}")
+            st.error(f"Probe failed: {scrub_secrets(diagnostics['error'])}")
         elif diagnostics["provider"] != diagnostics["selected_provider"]:
             st.info("The active provider differs from the requested provider due to fallback.")
 
@@ -378,7 +379,8 @@ def _generate_answer_safe(
 ) -> str:
     """Generate an answer without propagating LLM exceptions to the UI."""
     prompt = GenerateAnswerUseCase._build_prompt(query, results)
-    return safe_llm_complete(llm, prompt)
+    answer = safe_llm_complete(llm, prompt)
+    return scrub_secrets(answer)
 
 
 def _render_query_understanding(
@@ -700,7 +702,7 @@ def main() -> int:
                     st.subheader("Answer")
                     answer_header_shown = True
                 answer_text += event.token
-                answer_container.markdown(answer_text)
+                answer_container.markdown(scrub_secrets(answer_text))
             elif isinstance(event, StreamComplete):
                 status.update(label="✅ Answer complete", state="complete")
 
@@ -758,7 +760,7 @@ def main() -> int:
                 if answer == UNABLE_TO_GENERATE_ANSWER:
                     st.warning("Answer generation fell back to a safe default.")
             st.subheader("Answer")
-            st.markdown(answer)
+            st.markdown(scrub_secrets(answer))
 
     return 0
 

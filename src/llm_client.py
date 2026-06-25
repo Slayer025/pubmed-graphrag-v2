@@ -100,7 +100,7 @@ _CHUNK_HEADER_RE = re.compile(
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _MOCK_TOP_K_CHUNKS = 3
-_MOCK_MIN_TOP_CHUNK_SCORE = 0.55
+_MOCK_MIN_TOP_CHUNK_SCORE = 0.05
 _MOCK_BULLET_LABELS = ("Risk factor", "Association", "Evidence")
 ANSWER_EVIDENCE_SUBTITLE = "Answer generated from retrieved PubMed evidence."
 UNABLE_TO_GENERATE_ANSWER = "Unable to generate answer from retrieved context."
@@ -597,18 +597,20 @@ def create_llm_client_with_mode(
 
 def safe_llm_complete(llm: LLMClient, prompt: str, **kwargs: Any) -> str:
     """Complete a prompt without raising; always return user-visible text."""
+    from src.infrastructure.utils.secrets import scrub_secrets
+
     try:
         return _sanitize_answer_text(llm.complete(prompt, **kwargs))
     except Exception as exc:
         logger.warning(
             "LLM complete() failed (%s: %s); attempting mock retrieval fallback",
             type(exc).__name__,
-            exc,
+            scrub_secrets(str(exc)),
         )
         try:
             return MockLLMClient().complete(prompt, **kwargs)
         except Exception as mock_exc:
-            logger.exception("Mock retrieval fallback failed: %s", mock_exc)
+            logger.exception("Mock retrieval fallback failed: %s", scrub_secrets(str(mock_exc)))
             return UNABLE_TO_GENERATE_ANSWER
 
 
