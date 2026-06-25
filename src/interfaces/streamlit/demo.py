@@ -47,8 +47,18 @@ mark_streamlit_runtime()
 from src.application.dto.rerank_config import RerankConfig
 from src.application.dto.search_config import SearchConfig
 from src.application.use_cases.generate_answer import GenerateAnswerUseCase
+from src.application.use_cases.retrieve_and_generate_stream import (
+    RetrieveAndGenerateStreamUseCase,
+)
 from src.application.use_cases.retrieve_documents import RetrieveDocumentsUseCase
 from src.bootstrap import build_pipeline, default_search_config
+from src.domain.entities.stream_events import (
+    ChunksFound,
+    GraphEvidenceFound,
+    RetrievalStarted,
+    StreamComplete,
+    TextChunkEvent,
+)
 from src.bootstrap.bootstrap_artifacts import get_preloaded_artifacts
 from src.config import AppConfig
 from src.infrastructure.embeddings.remote_embedding_client import create_embedding_client
@@ -418,6 +428,45 @@ def _render_graph_evidence(graph_repository: Any, results: list[RetrievalResult]
         st.write(f"- `{entity_id}` (mentions={count}, degree={degree})")
 
 
+def _build_streaming_use_case(
+    retrieve_documents: RetrieveDocumentsUseCase,
+    llm_client: Any,
+) -> RetrieveAndGenerateStreamUseCase:
+    """Build the streaming use case from the synchronous retrieval stack."""
+    return RetrieveAndGenerateStreamUseCase(
+        vector_search=retrieve_documents.vector_search,
+        llm_client=llm_client,
+        chunk_repository=retrieve_documents.rerank.chunk_repository,
+        graph_repository=retrieve_documents.graph_expand.graph_repository,
+        sparse_retriever=retrieve_documents.sparse_retriever,
+        rrf_fusion_service=retrieve_documents.rrf_fusion_service,
+        query_classifier=retrieve_documents.query_classifier,
+        strategy_router=retrieve_documents.strategy_router,
+        metadata_boost_service=retrieve_documents.metadata_boost_service,
+    )
+
+
+def _render_streaming_graph_evidence(
+    graph_repository: Any,
+    entities: list[dict],
+) -> None:
+    """Render graph evidence emitted by the streaming use case."""
+    st.subheader("Graph evidence")
+    if not entities:
+        st.write("No shared entities found for the top results.")
+        return
+
+    entity_counts: dict[str, int] = {}
+    for entity in entities:
+        entity_counts[entity["entity_id"]] = entity_counts.get(entity["entity_id"], 0) + 1
+
+    sorted_entities = sorted(entity_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    st.write("Top entities mentioned by the top retrieved chunks:")
+    for entity_id, count in sorted_entities:
+        degree = graph_repository.get_entity_degree(entity_id)
+        st.write(f"- `{entity_id}` (mentions={count}, degree={degree})")
+
+
 def main() -> int:
     st.set_page_config(page_title="PubMed GraphRAG", layout="wide")
     st.title("🧬 PubMed GraphRAG")
@@ -468,6 +517,12 @@ def main() -> int:
                     index=0,
                     help="Choose a specific index for A/B testing, or leave it to the query router.",
                 )
+
+            use_streaming = st.checkbox(
+                "🌊 Enable Streaming Mode",
+                value=False,
+                help="Streams retrieved sources and graph evidence before the answer finishes generating.",
+            )
 
         with st.expander("⚙️ Retrieval Parameters", expanded=False):
             top_k = st.slider("top_k", 1, 50, 10)
@@ -534,6 +589,63 @@ def main() -> int:
     col1, col2 = st.columns(2)
     retrieve_clicked = col1.button("🔍 Retrieve")
     answer_clicked = col2.button("💬 Answer")
+
+    if use_streaming and answer_clicked:
+        if use_decomposer:
+            st.info("Query decomposition is disabled in streaming mode.")
+        if use_reranker:
+            st.info(
+                "Graph re-ranking is disabled in streaming mode; the streaming use case "
+                "applies its own ranking."
+            )
+
+        stream_use_case = _build_streaming_use_case(retrieve_documents, llm_selection.client)
+        status = st.status("🔍 Searching...", state="running")
+        events = stream_use_case.execute(Query(query), search_config)
+
+        answer_container = st.empty()
+        answer_text = ""
+        answer_header_shown = False
+        streamed_results: list[RetrievalResult] = []
+
+        for event in events:
+            if isinstance(event, RetrievalStarted):
+                status.update(label="🔍 Searching...", state="running")
+            elif isinstance(event, ChunksFound):
+                streamed_results = event.chunks
+                status.update(label=f"✅ Found {len(event.chunks)} chunks", state="complete")
+                st.subheader(f"Retrieved context ({len(event.chunks)} chunks)")
+                actual_backend = getattr(
+                    retrieve_documents.vector_search.vector_store, "last_backend", None
+                )
+                requested_backend = "hnsw" if search_config.use_hnsw else "numpy"
+                if actual_backend:
+                    st.caption(f"⚡ Backend: {actual_backend} (requested: {requested_backend})")
+                elif search_config.use_hnsw:
+                    st.caption("⚡ HNSW requested")
+                if search_config.enable_metadata_boost:
+                    st.caption("🔬 Metadata boost applied")
+                for rank, result in enumerate(event.chunks, start=1):
+                    _render_result_card(rank, result)
+
+                st.download_button(
+                    label="Download results as CSV",
+                    data=_results_to_csv(event.chunks),
+                    file_name="retrieval_results.csv",
+                    mime="text/csv",
+                )
+            elif isinstance(event, GraphEvidenceFound):
+                _render_streaming_graph_evidence(graph_repository, event.entities)
+            elif isinstance(event, TextChunkEvent):
+                if not answer_header_shown:
+                    st.subheader("Answer")
+                    answer_header_shown = True
+                answer_text += event.token
+                answer_container.markdown(answer_text)
+            elif isinstance(event, StreamComplete):
+                status.update(label="✅ Answer complete", state="complete")
+
+        return 0
 
     if retrieve_clicked or answer_clicked:
         with st.spinner("Retrieving..."):
