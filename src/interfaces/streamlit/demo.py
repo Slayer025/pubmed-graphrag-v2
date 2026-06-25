@@ -467,6 +467,63 @@ def _render_streaming_graph_evidence(
         st.write(f"- `{entity_id}` (mentions={count}, degree={degree})")
 
 
+def _format_event_timestamp(ts: float, first_ts: float | None) -> tuple[str, str]:
+    """Return (wallclock string, delta string) for an event timestamp."""
+    from datetime import datetime
+
+    wall = datetime.fromtimestamp(ts).strftime("%H:%M:%S.%f")[:-3]
+    if first_ts is None:
+        return wall, "+0.00s"
+    delta = ts - first_ts
+    return wall, f"+{delta:.2f}s"
+
+
+def _describe_event(event: Any) -> str:
+    """Return a short human-readable description of a stream event."""
+    if isinstance(event, RetrievalStarted):
+        return f"Query: {event.query[:80]}"
+    if isinstance(event, ChunksFound):
+        return f"Found {len(event.chunks)} chunk(s)"
+    if isinstance(event, GraphEvidenceFound):
+        return f"Found {len(event.entities)} entity mention(s)"
+    if isinstance(event, TextChunkEvent):
+        return f"Token: {event.token[:60]}"
+    if isinstance(event, StreamComplete):
+        return "Pipeline complete"
+    return ""
+
+
+def _event_type_name(event: Any) -> str:
+    """Return the class name of a stream event."""
+    return type(event).__name__
+
+
+def _render_event_sequence(event_log: list[Any]) -> None:
+    """Render a table proving sources arrive before answer generation finishes."""
+    if not event_log:
+        return
+
+    first_ts = event_log[0].timestamp
+    rows = []
+    for event in event_log:
+        wall, delta = _format_event_timestamp(event.timestamp, first_ts)
+        rows.append(
+            {
+                "Event type": _event_type_name(event),
+                "Timestamp": wall,
+                "Delta": delta,
+                "Description": _describe_event(event),
+            }
+        )
+
+    with st.expander("🕒 Event Sequence", expanded=True):
+        st.markdown(
+            "This table proves that **sources and graph evidence arrive before** "
+            "the streaming answer finishes generating."
+        )
+        st.dataframe(rows, use_container_width=True)
+
+
 def main() -> int:
     st.set_page_config(page_title="PubMed GraphRAG", layout="wide")
     st.title("🧬 PubMed GraphRAG")
@@ -607,8 +664,10 @@ def main() -> int:
         answer_text = ""
         answer_header_shown = False
         streamed_results: list[RetrievalResult] = []
+        event_log: list[Any] = []
 
         for event in events:
+            event_log.append(event)
             if isinstance(event, RetrievalStarted):
                 status.update(label="🔍 Searching...", state="running")
             elif isinstance(event, ChunksFound):
@@ -645,6 +704,7 @@ def main() -> int:
             elif isinstance(event, StreamComplete):
                 status.update(label="✅ Answer complete", state="complete")
 
+        _render_event_sequence(event_log)
         return 0
 
     if retrieve_clicked or answer_clicked:
