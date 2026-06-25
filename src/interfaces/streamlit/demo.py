@@ -89,6 +89,8 @@ def get_pipeline(hf_home: str) -> RAGPipeline:
 
 def _build_search_config(base: SearchConfig, overrides: dict[str, Any]) -> SearchConfig:
     """Build a request-scoped ``SearchConfig`` from UI overrides."""
+    use_hnsw = overrides.get("use_hnsw", base.use_hnsw)
+    logger.info("BUILD CONFIG: use_hnsw = %s", use_hnsw)
     return SearchConfig(
         top_k=overrides.get("top_k", base.top_k),
         expand_depth=overrides.get("expand_depth", base.expand_depth),
@@ -100,6 +102,7 @@ def _build_search_config(base: SearchConfig, overrides: dict[str, Any]) -> Searc
         alpha=overrides.get("alpha", base.alpha),
         depth_scores=base.depth_scores,
         max_results=overrides.get("max_results", base.max_results),
+        use_hnsw=use_hnsw,
         use_hybrid=overrides.get("use_hybrid", base.use_hybrid),
         rrf_k=overrides.get("rrf_k", base.rrf_k),
         enable_query_routing=overrides.get("enable_query_routing", base.enable_query_routing),
@@ -435,6 +438,7 @@ def main() -> int:
                 value=False,
                 help="Uses pre-built HNSW approximate-nearest-neighbor indexes instead of exact NumPy search.",
             )
+            logger.info("UI: use_hnsw checkbox = %s", use_hnsw)
             use_hybrid = st.checkbox(
                 "Enable Hybrid Retrieval",
                 value=False,
