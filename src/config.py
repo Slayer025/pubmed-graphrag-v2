@@ -49,19 +49,53 @@ class EmbeddingConfig:
 
     @classmethod
     def from_env(cls) -> "EmbeddingConfig":
-        """Build embedding config from environment / Streamlit secrets."""
+        """Build embedding config from environment / Streamlit secrets.
+
+        When running on Streamlit Cloud, ``st.secrets`` is the preferred source
+        for sensitive values.  Environment variables are used as a fallback.
+        """
         defaults = cls()
+        try:
+            import streamlit as st  # type: ignore
+
+            secrets = st.secrets if hasattr(st, "secrets") else {}
+        except Exception:
+            secrets = {}
+
+        def _get(name: str, env_name: str) -> str | None:
+            """Read from Streamlit secrets first, then environment."""
+            try:
+                value = secrets.get(name)
+            except Exception:
+                value = None
+            if value:
+                return str(value).strip() or None
+            value = os.environ.get(env_name)
+            if value:
+                return value.strip() or None
+            return None
+
+        provider = _get("EMBEDDING_PROVIDER", "EMBEDDING_PROVIDER") or defaults.provider
+        normalize_raw = _get("EMBEDDING_NORMALIZE", "EMBEDDING_NORMALIZE")
+        normalize = (
+            normalize_raw.lower() in {"1", "true", "yes"}
+            if normalize_raw
+            else defaults.normalize
+        )
+
         return cls(
-            provider=os.environ.get("EMBEDDING_PROVIDER", defaults.provider),
-            model_name=os.environ.get("EMBEDDING_MODEL", defaults.model_name),
-            embedding_dim=int(os.environ.get("EMBEDDING_DIM", defaults.embedding_dim)),
-            batch_size=int(os.environ.get("EMBEDDING_BATCH_SIZE", defaults.batch_size)),
-            normalize=os.environ.get("EMBEDDING_NORMALIZE", "true").lower()
-            in {"1", "true", "yes"},
-            api_token=os.environ.get("HF_API_TOKEN"),
-            service_url=os.environ.get("EMBEDDING_SERVICE_URL"),
+            provider=provider,
+            model_name=_get("EMBEDDING_MODEL", "EMBEDDING_MODEL") or defaults.model_name,
+            embedding_dim=int(_get("EMBEDDING_DIM", "EMBEDDING_DIM") or defaults.embedding_dim),
+            batch_size=int(
+                _get("EMBEDDING_BATCH_SIZE", "EMBEDDING_BATCH_SIZE") or defaults.batch_size
+            ),
+            normalize=normalize,
+            api_token=_get("HF_API_TOKEN", "HF_API_TOKEN"),
+            service_url=_get("EMBEDDING_SERVICE_URL", "EMBEDDING_SERVICE_URL"),
             timeout_seconds=float(
-                os.environ.get("EMBEDDING_TIMEOUT_SECONDS", defaults.timeout_seconds)
+                _get("EMBEDDING_TIMEOUT_SECONDS", "EMBEDDING_TIMEOUT_SECONDS")
+                or defaults.timeout_seconds
             ),
         )
 
