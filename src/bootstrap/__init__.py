@@ -103,22 +103,25 @@ def _build_vector_store(
     """Build the vector store from available chunk+embedding indexes.
 
     The semantic index is always loaded. Additional indexes (fixed, sentence)
-    are loaded opportunistically when their files exist. If only the semantic
-    index is available, a plain ``NumpyVectorStore`` is returned for backwards
-    compatibility and minimal memory use. When multiple indexes are present,
-    they are wrapped in a ``MultiIndexVectorStore`` with ``semantic`` as the
-    default.
+    are loaded opportunistically when their files exist in the artifact cache.
+    If only the semantic index is available, a plain ``NumpyVectorStore`` is
+    returned for backwards compatibility and minimal memory use. When multiple
+    indexes are present, they are wrapped in a ``MultiIndexVectorStore`` with
+    ``semantic`` as the default.
     """
     cfg = config or AppConfig.default()
 
     semantic_store = NumpyVectorStore(artifacts.chunks, artifacts.embeddings)
     indexes: dict[str, VectorStore] = {"semantic": semantic_store}
-    base_chunks = cfg.artifact.chunks_path
-    base_embeddings = cfg.artifact.embeddings_path
 
+    # Additional indexes are expected in the artifact cache directory, which is
+    # where bootstrap_artifacts() materializes them (locally or from a release).
+    from src.bootstrap.bootstrap_artifacts import default_cache_dir
+
+    cache_root = Path(default_cache_dir()).resolve()
     optional_indexes = [
-        ("fixed", base_chunks.parent / "chunks_fixed.jsonl.gz", base_embeddings.parent / "fixed_embeddings.npy"),
-        ("sentence", base_chunks.parent / "chunks_sentence.jsonl.gz", base_embeddings.parent / "sentence_embeddings.npy"),
+        ("fixed", cache_root / "data/chunks/chunks_fixed.jsonl.gz", cache_root / "data/embeddings/fixed_embeddings.npy"),
+        ("sentence", cache_root / "data/chunks/chunks_sentence.jsonl.gz", cache_root / "data/embeddings/sentence_embeddings.npy"),
     ]
 
     for name, chunks_path, embeddings_path in optional_indexes:

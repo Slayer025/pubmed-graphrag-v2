@@ -25,7 +25,9 @@ This file gives an AI assistant everything needed to resume work on the PubMed G
 ## Deployment
 - URL: https://pubmed-graphrag-kamfpkughsfmstpcrv8r23.streamlit.app/
 - Repository: https://github.com/Slayer025/pubmed-graphrag-v2
-- Secrets: EMBEDDING_PROVIDER, EMBEDDING_MODEL, HF_API_TOKEN configured
+- Release (artifacts): https://github.com/Slayer025/pubmed-graphrag-v2/releases/tag/v2.0-artifacts
+- `ARTIFACT_BASE_URL`: `https://github.com/Slayer025/pubmed-graphrag-v2/releases/download/v2.0-artifacts`
+- Secrets: `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `HF_API_TOKEN`, `ARTIFACT_BASE_URL`
 ---
 ## Project Goal
 

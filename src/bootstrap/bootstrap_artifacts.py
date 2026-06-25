@@ -36,7 +36,11 @@ _RETRY_BACKOFF_SECONDS = (1, 2, 4)
 # Order matches artifact_paths() and ArtifactLoader.load_from_paths().
 _CACHE_LOGICAL_PATHS: tuple[str, ...] = (
     "data/chunks/chunks_semantic.jsonl.gz",
+    "data/chunks/chunks_fixed.jsonl.gz",
+    "data/chunks/chunks_sentence.jsonl.gz",
     "data/embeddings/semantic_embeddings.npy",
+    "data/embeddings/fixed_embeddings.npy",
+    "data/embeddings/sentence_embeddings.npy",
     "data/graph/mentions.csv",
     "data/graph/has_chunk.csv",
     "data/graph/entities.csv",
@@ -44,7 +48,11 @@ _CACHE_LOGICAL_PATHS: tuple[str, ...] = (
 
 _ARTIFACT_REMOTE_NAMES: dict[str, str] = {
     "data/chunks/chunks_semantic.jsonl.gz": "chunks_semantic.jsonl.gz",
+    "data/chunks/chunks_fixed.jsonl.gz": "chunks_fixed.jsonl.gz",
+    "data/chunks/chunks_sentence.jsonl.gz": "chunks_sentence.jsonl.gz",
     "data/embeddings/semantic_embeddings.npy": "semantic_embeddings.npy",
+    "data/embeddings/fixed_embeddings.npy": "fixed_embeddings.npy",
+    "data/embeddings/sentence_embeddings.npy": "sentence_embeddings.npy",
     "data/graph/mentions.csv": "mentions.csv",
     "data/graph/entities.csv": "entities.csv",
     "data/graph/has_chunk.csv": "has_chunk.csv",
@@ -52,7 +60,11 @@ _ARTIFACT_REMOTE_NAMES: dict[str, str] = {
 
 _MIN_VALID_SIZES: dict[str, int] = {
     "data/chunks/chunks_semantic.jsonl.gz": MIN_VALID_SIZE_DEFAULT,
+    "data/chunks/chunks_fixed.jsonl.gz": MIN_VALID_SIZE_DEFAULT,
+    "data/chunks/chunks_sentence.jsonl.gz": MIN_VALID_SIZE_DEFAULT,
     "data/embeddings/semantic_embeddings.npy": 1024 * 1024,
+    "data/embeddings/fixed_embeddings.npy": 1024 * 1024,
+    "data/embeddings/sentence_embeddings.npy": 1024 * 1024,
     "data/graph/mentions.csv": MIN_VALID_SIZE_DEFAULT,
     "data/graph/entities.csv": MIN_VALID_SIZE_DEFAULT,
     "data/graph/has_chunk.csv": MIN_VALID_SIZE_DEFAULT,
@@ -127,15 +139,23 @@ def default_cache_dir() -> str:
     return env_dir or "/tmp/pubmed-graphrag"
 
 
-def artifact_paths(cache_dir: str) -> tuple[str, str, str, str, str]:
-    """Return deterministic on-disk paths (no filesystem access)."""
+def artifact_paths(cache_dir: str) -> tuple[str, ...]:
+    """Return deterministic on-disk paths for all indexes (no filesystem access)."""
     root = Path(cache_dir).resolve()
+    return tuple(str(root / logical) for logical in _CACHE_LOGICAL_PATHS)
+
+
+def core_artifact_paths(cache_dir: str) -> tuple[str, str, str, str, str]:
+    """Return paths for the core semantic + graph artifacts used by ArtifactLoader."""
+    paths = artifact_paths(cache_dir)
+    # _CACHE_LOGICAL_PATHS order:
+    # 0=semantic chunks, 3=semantic embeddings, 6=mentions, 7=has_chunk, 8=entities
     return (
-        str(root / "data/chunks/chunks_semantic.jsonl.gz"),
-        str(root / "data/embeddings/semantic_embeddings.npy"),
-        str(root / "data/graph/mentions.csv"),
-        str(root / "data/graph/has_chunk.csv"),
-        str(root / "data/graph/entities.csv"),
+        paths[0],
+        paths[3],
+        paths[6],
+        paths[7],
+        paths[8],
     )
 
 
@@ -456,7 +476,7 @@ def bootstrap_artifacts(cache_dir: str | None = None) -> BootstrapStatus:
 
             cfg = AppConfig.default()
             _preloaded_artifacts = ArtifactLoader.load_from_paths(
-                *paths,
+                *core_artifact_paths(resolved_cache_dir),
                 embedding_dim=cfg.embedding.embedding_dim,
             )
         except Exception as exc:
