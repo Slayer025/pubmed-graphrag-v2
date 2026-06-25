@@ -30,9 +30,15 @@ class SearchConfig:
     enable_metadata_boost: bool = False
     metadata_boost_factor: float = 1.1
 
+    # Phase 5: multiple embedding indexes
+    default_index: str = "semantic"
+    enable_multi_index: bool = False
+    index_name: str | None = None
+
     @classmethod
     def from_retrieval_config(cls, config) -> "SearchConfig":
         """Build a ``SearchConfig`` from ``src.config.RetrievalConfig``."""
+        default_index = getattr(config, "default_index", "semantic")
         return cls(
             top_k=config.top_k,
             expand_depth=config.expand_depth,
@@ -47,6 +53,9 @@ class SearchConfig:
             enable_query_routing=getattr(config, "enable_query_routing", False),
             enable_metadata_boost=getattr(config, "enable_metadata_boost", False),
             metadata_boost_factor=getattr(config, "metadata_boost_factor", 1.1),
+            default_index=default_index,
+            enable_multi_index=getattr(config, "enable_multi_index", False),
+            index_name=default_index,
         )
 
     def to_hyperparameters(self) -> RetrievalHyperparameters:

@@ -37,7 +37,12 @@ class QueryClassifier(Protocol):
 class StrategyRouter(Protocol):
     """Port for strategy routing."""
 
-    def route_strategy(self, classification: dict) -> dict:
+    def route_strategy(
+        self,
+        classification: dict,
+        *,
+        enable_multi_index: bool = False,
+    ) -> dict:
         """Return strategy dict for the classification."""
         ...
 
@@ -96,25 +101,35 @@ class RetrieveDocumentsUseCase:
         self,
         query: Query,
         config: SearchConfig,
-    ) -> tuple[SearchConfig, dict, dict]:
-        """Return a possibly modified config plus classification and strategy metadata."""
+    ) -> tuple[SearchConfig, dict, dict, str | None]:
+        """Return a possibly modified config plus classification, strategy, and index metadata."""
         if not config.enable_query_routing:
-            return config, {}, {}
+            return config, {}, {}, None
 
         classification = {}
         strategy = {}
         if self.query_classifier is not None:
             classification = self.query_classifier.classify_query(query.text)
         if self.strategy_router is not None:
-            strategy = self.strategy_router.route_strategy(classification)
+            strategy = self.strategy_router.route_strategy(
+                classification,
+                enable_multi_index=config.enable_multi_index,
+            )
 
         if not strategy:
-            return config, classification, strategy
+            return config, classification, strategy, None
+
+        index_name = (
+            strategy.get("index_name")
+            if config.enable_query_routing and config.enable_multi_index
+            else None
+        )
 
         logger.info(
-            "QUERY ROUTING: type=%s strategy=%s reason=%s",
+            "QUERY ROUTING: type=%s strategy=%s index=%s reason=%s",
             classification.get("query_type", "general"),
             strategy.get("strategy_name", "unknown"),
+            index_name or "default",
             strategy.get("reason", ""),
         )
 
@@ -130,8 +145,13 @@ class RetrieveDocumentsUseCase:
             rrf_k=int(strategy.get("rrf_k", config.rrf_k)),
             max_results=config.max_results,
             enable_query_routing=config.enable_query_routing,
+            enable_metadata_boost=config.enable_metadata_boost,
+            metadata_boost_factor=config.metadata_boost_factor,
+            default_index=config.default_index,
+            enable_multi_index=config.enable_multi_index,
+            index_name=index_name or config.default_index,
         )
-        return routed, classification, strategy
+        return routed, classification, strategy, index_name
 
     def execute(
         self,
@@ -144,9 +164,11 @@ class RetrieveDocumentsUseCase:
         (results, classification, strategy). When disabled, returns only the
         list of results to preserve backwards compatibility.
         """
-        routed_config, classification, strategy = self._apply_strategy(query, config)
+        routed_config, classification, strategy, index_name = self._apply_strategy(query, config)
 
-        vector_results = self.vector_search.execute(query, routed_config)
+        logger.info("INDEX ROUTING: index=%s", index_name or "default")
+
+        vector_results = self.vector_search.execute(query, routed_config, index_name=index_name)
 
         if not routed_config.use_hybrid or self.sparse_retriever is None:
             logger.info("RETRIEVAL: mode=dense_only")
@@ -185,16 +207,21 @@ class RetrieveDocumentsUseCase:
         self,
         query_vector: Any,
         config: SearchConfig,
+        *,
+        index_name: str | None = None,
     ) -> list[RetrievalResult]:
         """Retrieve by a pre-computed query vector.
 
         Vector-based retrieval skips query classification because there is no
         query text, so this method always returns a plain list of results for
-        backwards compatibility.
+        backwards compatibility. An optional ``index_name`` selects the vector
+        index to search; when omitted the configured default index is used.
         """
         if isinstance(query_vector, np.ndarray):
             query_vector = query_vector.tolist()
-        vector_results = self.vector_search.search_by_vector(query_vector, config)
+        vector_results = self.vector_search.search_by_vector(
+            query_vector, config, index_name=index_name
+        )
         seed_ids = {chunk_id for chunk_id, _ in vector_results}
         expanded = self.graph_expand.execute(seed_ids, config)
         return self.rerank.execute(vector_results, expanded, config)

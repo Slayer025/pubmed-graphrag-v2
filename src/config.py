@@ -107,6 +107,10 @@ class RetrievalConfig:
     enable_metadata_boost: bool = False
     metadata_boost_factor: float = 1.1
 
+    # Phase 5: multiple embedding indexes / chunking strategies
+    default_index: str = "semantic"
+    enable_multi_index: bool = False
+
     # Final result cap
     max_results: int = 20
 

@@ -22,8 +22,17 @@ class EmbeddingService(Protocol):
 class VectorStore(Protocol):
     """Port for vector similarity search."""
 
-    def search(self, query_vector: list[float], top_k: int) -> list[tuple[str, float]]:
-        """Return top-k (chunk_id, similarity_score) pairs."""
+    def search(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        *,
+        index_name: str | None = None,
+    ) -> list[tuple[str, float]]:
+        """Return top-k (chunk_id, similarity_score) pairs.
+
+        ``index_name`` is optional and may be ignored by single-index stores.
+        """
         ...
 
 

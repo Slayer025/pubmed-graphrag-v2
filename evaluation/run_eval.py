@@ -46,6 +46,7 @@ DENSE_RESULTS_PATH = Path(__file__).parent / "results_dense_only.jsonl"
 HYBRID_RESULTS_PATH = Path(__file__).parent / "results_hybrid.jsonl"
 ROUTED_RESULTS_PATH = Path(__file__).parent / "results_routed.jsonl"
 METADATA_BOOST_RESULTS_PATH = Path(__file__).parent / "results_metadata_boost.jsonl"
+MULTI_INDEX_RESULTS_PATH = Path(__file__).parent / "results_multi_index.jsonl"
 SUMMARY_PATH = Path(__file__).parent.parent / "outputs" / "retrieval_improvement_summary.json"
 
 
@@ -183,6 +184,17 @@ def _parse_args() -> argparse.Namespace:
         default=1.1,
         help="Metadata boost factor (default: 1.1).",
     )
+    parser.add_argument(
+        "--multi-index",
+        action="store_true",
+        help="Enable Phase 5 multi-index retrieval (automatic query routing selects index).",
+    )
+    parser.add_argument(
+        "--index-name",
+        type=str,
+        default=None,
+        help="Manual index override (semantic, fixed, sentence). Implies --multi-index.",
+    )
     return parser.parse_args()
 
 
@@ -193,6 +205,8 @@ def _build_search_config(
     enable_query_routing: bool = False,
     enable_metadata_boost: bool = False,
     metadata_boost_factor: float = 1.1,
+    enable_multi_index: bool = False,
+    index_name: str | None = None,
 ) -> SearchConfig:
     """Return the evaluation SearchConfig."""
     return SearchConfig(
@@ -209,6 +223,8 @@ def _build_search_config(
         enable_query_routing=enable_query_routing,
         enable_metadata_boost=enable_metadata_boost,
         metadata_boost_factor=metadata_boost_factor,
+        enable_multi_index=enable_multi_index,
+        index_name=index_name,
     )
 
 
@@ -219,11 +235,20 @@ def _run_evaluation(
     enable_query_routing: bool = False,
     enable_metadata_boost: bool = False,
     metadata_boost_factor: float = 1.1,
+    enable_multi_index: bool = False,
+    index_name: str | None = None,
 ) -> tuple[Path, dict, list[dict]]:
     """Run one evaluation pass and return the output path, metrics, and details."""
     if enable_metadata_boost:
         mode_label = "metadata_boost"
         results_path = METADATA_BOOST_RESULTS_PATH
+    elif enable_multi_index:
+        mode_label = "multi_index"
+        if index_name:
+            mode_label = f"multi_index_{index_name}"
+            results_path = Path(__file__).parent / f"results_multi_index_{index_name}.jsonl"
+        else:
+            results_path = MULTI_INDEX_RESULTS_PATH
     elif enable_query_routing:
         mode_label = "routed"
         results_path = ROUTED_RESULTS_PATH
@@ -239,6 +264,8 @@ def _run_evaluation(
         enable_query_routing=enable_query_routing,
         enable_metadata_boost=enable_metadata_boost,
         metadata_boost_factor=metadata_boost_factor,
+        enable_multi_index=enable_multi_index,
+        index_name=index_name,
     )
 
     cache_dir = os.environ.get("ARTIFACT_CACHE_DIR", "").strip() or str(
@@ -275,6 +302,11 @@ def _run_evaluation(
 
     if enable_metadata_boost:
         display_label = f"Metadata boost hybrid (k={rrf_k}, boost={metadata_boost_factor})"
+    elif enable_multi_index:
+        if index_name:
+            display_label = f"Multi-index override ({index_name})"
+        else:
+            display_label = "Multi-index routed hybrid"
     elif enable_query_routing:
         display_label = "Query routed hybrid"
     elif use_hybrid:
@@ -357,16 +389,19 @@ def _compare_all_modes() -> dict:
         metrics["query_routed_hybrid"] = _load_existing_metrics(ROUTED_RESULTS_PATH)
     if METADATA_BOOST_RESULTS_PATH.exists():
         metrics["metadata_boost_hybrid"] = _load_existing_metrics(METADATA_BOOST_RESULTS_PATH)
+    if MULTI_INDEX_RESULTS_PATH.exists():
+        metrics["multi_index_hybrid"] = _load_existing_metrics(MULTI_INDEX_RESULTS_PATH)
 
     label_map = {
         "dense_only": "Dense-only",
         "hybrid_rrf": "Hybrid RRF",
         "query_routed_hybrid": "Query routed hybrid",
         "metadata_boost_hybrid": "Metadata boost hybrid",
+        "multi_index_hybrid": "Multi-index routed hybrid",
     }
     rows = [
         (label_map[key], metrics[key])
-        for key in ["dense_only", "hybrid_rrf", "query_routed_hybrid", "metadata_boost_hybrid"]
+        for key in ["dense_only", "hybrid_rrf", "query_routed_hybrid", "metadata_boost_hybrid", "multi_index_hybrid"]
         if key in metrics
     ]
     _print_comparison_table(rows)
@@ -472,6 +507,32 @@ def main() -> int:
         _save_summary(summary)
         return 0
 
+    if args.multi_index or args.index_name:
+        enable_routing = args.multi_index or args.index_name is not None
+        enable_multi = args.multi_index or args.index_name is not None
+        _, multi_index_metrics, _ = _run_evaluation(
+            use_hybrid=True,
+            rrf_k=args.rrf_k,
+            enable_query_routing=enable_routing,
+            enable_multi_index=enable_multi,
+            index_name=args.index_name,
+        )
+        all_metrics = _compare_all_modes()
+        summary = _load_summary()
+        summary["metrics"]["multi_index_hybrid"] = multi_index_metrics
+        baseline_key = (
+            "query_routed_hybrid"
+            if "query_routed_hybrid" in all_metrics
+            else "hybrid_rrf"
+        )
+        baseline_metrics = all_metrics.get(baseline_key)
+        if baseline_metrics:
+            summary["deltas"]["multi_index_vs_routed_hybrid"] = _compute_deltas(
+                baseline_metrics, multi_index_metrics
+            )
+        _save_summary(summary)
+        return 0
+
     if args.hybrid:
         _run_evaluation(use_hybrid=True, rrf_k=args.rrf_k)
         return 0
@@ -489,6 +550,10 @@ def main() -> int:
     )
     print(
         f"\nOr run the full tuning sweep with: {Path(__file__).name} --tune",
+        flush=True,
+    )
+    print(
+        f"\nOr run multi-index evaluation with: {Path(__file__).name} --multi-index",
         flush=True,
     )
     return 0

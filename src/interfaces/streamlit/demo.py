@@ -107,6 +107,9 @@ def _build_search_config(base: SearchConfig, overrides: dict[str, Any]) -> Searc
         metadata_boost_factor=overrides.get(
             "metadata_boost_factor", base.metadata_boost_factor
         ),
+        default_index=overrides.get("default_index", base.default_index),
+        enable_multi_index=overrides.get("enable_multi_index", base.enable_multi_index),
+        index_name=overrides.get("index_name", base.index_name),
     )
 
 
@@ -384,6 +387,8 @@ def _render_query_understanding(
                 st.markdown(f"**Detected entities:** `{', '.join(entities)}`")
         if strategy:
             st.markdown(f"**Selected strategy:** `{strategy.get('strategy_name', 'unknown')}`")
+            selected_index = strategy.get("index_name") or "semantic"
+            st.markdown(f"**Selected index:** `{selected_index}`")
             st.markdown(f"**Reason:** {strategy.get('reason', '')}")
 
 
@@ -411,8 +416,8 @@ def _render_graph_evidence(graph_repository: Any, results: list[RetrievalResult]
 
 
 def main() -> int:
-    st.set_page_config(page_title="PubMed GraphRAG Demo", layout="wide")
-    st.title("🧬 PubMed GraphRAG Demo")
+    st.set_page_config(page_title="PubMed GraphRAG", layout="wide")
+    st.title("🧬 PubMed GraphRAG")
     st.markdown(
         "Ask a biomedical question. The demo retrieves semantic chunks from 5,000 "
         "PubMed abstracts using graph-enhanced retrieval."
@@ -440,6 +445,20 @@ def main() -> int:
                 value=False,
                 help="Automatically selects retrieval strategy based on query type.",
             )
+            enable_multi_index = st.checkbox(
+                "Enable Multi-Index Routing",
+                value=False,
+                help="Routes queries across semantic, fixed, and sentence-level embedding indexes.",
+            )
+
+            manual_index = "Auto (router decides)"
+            if enable_multi_index:
+                manual_index = st.selectbox(
+                    "Manual index override",
+                    options=["Auto (router decides)", "semantic", "fixed", "sentence"],
+                    index=0,
+                    help="Choose a specific index for A/B testing, or leave it to the query router.",
+                )
 
         with st.expander("⚙️ Retrieval Parameters", expanded=False):
             top_k = st.slider("top_k", 1, 50, 10)
@@ -469,6 +488,10 @@ def main() -> int:
                 disabled=not use_reranker,
             )
 
+    index_name: str | None = None
+    if enable_multi_index and manual_index != "Auto (router decides)":
+        index_name = manual_index
+
     retrieval_overrides = {
         "top_k": top_k,
         "expand_depth": expand_depth,
@@ -478,6 +501,8 @@ def main() -> int:
         "use_hybrid": use_hybrid,
         "enable_query_routing": enable_query_routing,
         "enable_metadata_boost": enable_metadata_boost,
+        "enable_multi_index": enable_multi_index,
+        "index_name": index_name,
     }
 
     try:

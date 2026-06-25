@@ -1,8 +1,8 @@
 # PubMed GraphRAG — Claude Context
 
-**Last updated:** 2026-06-24  
-**Current state:** Phases 1–4 complete. Phase 5 not started.  
-**Most recent commit:** `ff8a275 Phase 4-Metadata-Aware Retrieval`
+**Last updated:** 2026-06-25  
+**Current state:** Phases 1–5 complete.  
+**Most recent commit:** `Phase 5-Multiple Embedding Indexes`
 
 This file gives an AI assistant everything needed to resume work on the PubMed GraphRAG project without re-reading the entire repository.
 
@@ -24,6 +24,7 @@ This file gives an AI assistant everything needed to resume work on the PubMed G
 ---
 ## Deployment
 - URL: https://pubmed-graphrag-kamfpkughsfmstpcrv8r23.streamlit.app/
+- Repository: https://github.com/Slayer025/pubmed-graphrag-v2
 - Secrets: EMBEDDING_PROVIDER, EMBEDDING_MODEL, HF_API_TOKEN configured
 ---
 ## Project Goal
@@ -161,6 +162,46 @@ pubmed-graphrag/
 
 ---
 
+### ✅ Phase 5 — Multiple Embedding Indexes (Chunking Strategies)
+
+**What was built:**
+- `scripts/build_indexes.py` — offline generator that builds two lightweight, regex-only chunking strategies:
+  - `fixed`: 500-character windows with 50-character overlap.
+  - `sentence`: regex split on `(?<=[.?!])\s+(?=[A-Z0-9])`.
+- `src/infrastructure/vector_store/multi_index_vector_store.py` — registry adapter wrapping multiple `VectorStore` indexes keyed by name (`semantic`, `fixed`, `sentence`).
+- `src/infrastructure/vector_store/numpy_vector_store.py` and `src/application/ports.py` — `VectorStore.search(..., index_name=None)` extended for multi-index routing.
+- `src/application/use_cases/vector_search.py` — forwards `index_name` to the vector store.
+- `src/domain/services/strategy_router.py` — maps query types to preferred indexes:
+  - `definition` / `entity_specific` / `comparison` / `general` → `semantic`
+  - `relationship` / `mechanism` → `sentence`
+  - `fixed` available for manual override and A/B testing.
+- `src/application/use_cases/retrieve_documents.py` — extracts the routed `index_name` and passes it to vector search; logs `INDEX ROUTING: index=...`.
+- `src/bootstrap/__init__.py` — opportunistically loads all available indexes at bootstrap; falls back to a single `NumpyVectorStore` when only semantic exists.
+- `src/interfaces/streamlit/demo.py` — sidebar checkbox **“Enable Multi-Index Routing”** and manual dropdown **“Manual index override”**; selected index shown in the **“🧠 Query Understanding”** expander.
+- `evaluation/run_eval.py` — `--multi-index` and `--index-name` flags; writes `evaluation/results_multi_index.jsonl`.
+
+**Proof:**
+- Generated artifacts:
+  - `data/chunks/chunks_fixed.jsonl.gz` + `data/embeddings/fixed_embeddings.npy` (20,653 chunks, 30.3 MB)
+  - `data/chunks/chunks_sentence.jsonl.gz` + `data/embeddings/sentence_embeddings.npy` (5,417 chunks, 7.9 MB)
+- Evaluation run: `python evaluation/run_eval.py --multi-index --hybrid`
+  ```text
+  Multi-index routed hybrid Retrieval Metrics
+    Queries evaluated: 40
+    Recall@5:          0.05
+    Recall@10:         0.1
+    MRR@10:            0.019
+    Avg latency:       405.14 ms
+  ```
+- Logs confirm all three indexes loaded and routed:
+  ```text
+  Vector store: multi-index with ['fixed', 'semantic', 'sentence'] (default=semantic)
+  QUERY ROUTING: type=relationship strategy=hybrid_rrf_graph_expand index=sentence ...
+  INDEX ROUTING: index=sentence
+  ```
+
+---
+
 ## Key Config Flags
 
 | Flag | Location | Default | Meaning |
@@ -170,6 +211,9 @@ pubmed-graphrag/
 | `enable_query_routing` | `RetrievalConfig` / `SearchConfig` | `False` | Enable classifier + strategy router |
 | `enable_metadata_boost` | `RetrievalConfig` / `SearchConfig` | `False` | Enable entity-label boosting |
 | `metadata_boost_factor` | `RetrievalConfig` / `SearchConfig` | `1.1` | Score multiplier when labels match |
+| `default_index` | `RetrievalConfig` / `SearchConfig` | `semantic` | Default vector index name |
+| `enable_multi_index` | `RetrievalConfig` / `SearchConfig` | `False` | Enable index routing / multiple indexes |
+| `index_name` | `SearchConfig` | `None` | Manual index override (semantic, fixed, sentence) |
 
 ---
 
@@ -214,11 +258,12 @@ streamlit run scripts/demo.py
 
 # Run evaluation with flags
 python evaluation/run_eval.py [flags]
+python evaluation/run_eval.py --multi-index --hybrid  # Phase 5 multi-index routing
 
 # Commit changes
 git add .
 git commit -m "descriptive message"
-git push origin main
+git push origin main  # or push to https://github.com/Slayer025/pubmed-graphrag-v2
 ```
 
 ---
@@ -234,6 +279,7 @@ git push origin main
 - ✅ Robust error handling
 - ✅ All 99 tests passing
 - ✅ Deployed to Streamlit Cloud
+- ✅ Multiple embedding indexes (semantic / fixed / sentence) with query-driven routing
 
 ---
 
@@ -243,3 +289,5 @@ git push origin main
 - The `pure_build_guard` in `src/infrastructure/storage/pure_build.py` blocks filesystem writes during pipeline construction. Framework imports (`starlette`, `streamlit`, `anyio`, `uvicorn`, `fastapi`) are exempt.
 - Entity IDs in the graph are formatted as `label:name` (from `src/entity_extraction.py`); the metadata boost adapter splits on `:` to recover labels.
 - Evaluation metrics are low because the 40-query set is a random sample and sparse. Do not chase headline numbers; prefer reproducible before/after comparisons on the same query set.
+- `scripts/build_indexes.py` is strictly offline. Do not run it inside the Streamlit runtime.
+- Multi-index mode is disabled by default. When enabled, the vector store loads all available indexes, which increases memory use proportionally. Ensure the target deployment has enough RAM for the additional matrices (~38 MB extra for fixed + sentence with all-MiniLM-L6-v2).

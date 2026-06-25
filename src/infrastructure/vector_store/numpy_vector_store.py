@@ -14,10 +14,18 @@ class NumpyVectorStore:
         self.chunks = chunks
         self.embeddings = embeddings
 
-    def search(self, query_vector: list[float], top_k: int) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        *,
+        index_name: str | None = None,
+    ) -> list[tuple[str, float]]:
         """Return top-k (chunk_id, cosine_similarity) pairs by dot product.
 
-        Assumes embeddings and query vector are L2-normalized.
+        Assumes embeddings and query vector are L2-normalized. The optional
+        ``index_name`` is accepted for API compatibility with multi-index stores
+        but is ignored by this single-index implementation.
         """
         vector = np.asarray(query_vector, dtype=np.float32)
         scores = self.embeddings @ vector
