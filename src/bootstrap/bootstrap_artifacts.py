@@ -44,6 +44,13 @@ _CACHE_LOGICAL_PATHS: tuple[str, ...] = (
     "data/graph/mentions.csv",
     "data/graph/has_chunk.csv",
     "data/graph/entities.csv",
+    "data/hnsw/semantic_index.bin",
+    "data/hnsw/semantic_chunk_ids.json",
+    "data/hnsw/fixed_index.bin",
+    "data/hnsw/fixed_chunk_ids.json",
+    "data/hnsw/sentence_index.bin",
+    "data/hnsw/sentence_chunk_ids.json",
+    "data/hnsw/manifest.json",
 )
 
 _ARTIFACT_REMOTE_NAMES: dict[str, str] = {
@@ -56,6 +63,13 @@ _ARTIFACT_REMOTE_NAMES: dict[str, str] = {
     "data/graph/mentions.csv": "mentions.csv",
     "data/graph/entities.csv": "entities.csv",
     "data/graph/has_chunk.csv": "has_chunk.csv",
+    "data/hnsw/semantic_index.bin": "semantic_index.bin",
+    "data/hnsw/semantic_chunk_ids.json": "semantic_chunk_ids.json",
+    "data/hnsw/fixed_index.bin": "fixed_index.bin",
+    "data/hnsw/fixed_chunk_ids.json": "fixed_chunk_ids.json",
+    "data/hnsw/sentence_index.bin": "sentence_index.bin",
+    "data/hnsw/sentence_chunk_ids.json": "sentence_chunk_ids.json",
+    "data/hnsw/manifest.json": "manifest.json",
 }
 
 _MIN_VALID_SIZES: dict[str, int] = {
@@ -68,6 +82,13 @@ _MIN_VALID_SIZES: dict[str, int] = {
     "data/graph/mentions.csv": MIN_VALID_SIZE_DEFAULT,
     "data/graph/entities.csv": MIN_VALID_SIZE_DEFAULT,
     "data/graph/has_chunk.csv": MIN_VALID_SIZE_DEFAULT,
+    "data/hnsw/semantic_index.bin": 1024 * 1024,
+    "data/hnsw/fixed_index.bin": 1024 * 1024,
+    "data/hnsw/sentence_index.bin": 1024 * 1024,
+    "data/hnsw/semantic_chunk_ids.json": MIN_VALID_SIZE_DEFAULT,
+    "data/hnsw/fixed_chunk_ids.json": MIN_VALID_SIZE_DEFAULT,
+    "data/hnsw/sentence_chunk_ids.json": MIN_VALID_SIZE_DEFAULT,
+    "data/hnsw/manifest.json": 100,
 }
 
 _streamlit_runtime = False
