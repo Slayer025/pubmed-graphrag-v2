@@ -44,6 +44,8 @@ logging.basicConfig(
 QUERIES_PATH = Path(__file__).parent / "queries.jsonl"
 DENSE_RESULTS_PATH = Path(__file__).parent / "results_dense_only.jsonl"
 HYBRID_RESULTS_PATH = Path(__file__).parent / "results_hybrid.jsonl"
+HNSW_RESULTS_PATH = Path(__file__).parent / "results_hnsw.jsonl"
+HNSW_HYBRID_RESULTS_PATH = Path(__file__).parent / "results_hnsw_hybrid.jsonl"
 ROUTED_RESULTS_PATH = Path(__file__).parent / "results_routed.jsonl"
 METADATA_BOOST_RESULTS_PATH = Path(__file__).parent / "results_metadata_boost.jsonl"
 MULTI_INDEX_RESULTS_PATH = Path(__file__).parent / "results_multi_index.jsonl"
@@ -195,6 +197,11 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Manual index override (semantic, fixed, sentence). Implies --multi-index.",
     )
+    parser.add_argument(
+        "--hnsw",
+        action="store_true",
+        help="Enable Phase 6 HNSW approximate-nearest-neighbor search.",
+    )
     return parser.parse_args()
 
 
@@ -207,6 +214,7 @@ def _build_search_config(
     metadata_boost_factor: float = 1.1,
     enable_multi_index: bool = False,
     index_name: str | None = None,
+    use_hnsw: bool = False,
 ) -> SearchConfig:
     """Return the evaluation SearchConfig."""
     return SearchConfig(
@@ -225,6 +233,7 @@ def _build_search_config(
         metadata_boost_factor=metadata_boost_factor,
         enable_multi_index=enable_multi_index,
         index_name=index_name,
+        use_hnsw=use_hnsw,
     )
 
 
@@ -237,9 +246,16 @@ def _run_evaluation(
     metadata_boost_factor: float = 1.1,
     enable_multi_index: bool = False,
     index_name: str | None = None,
+    use_hnsw: bool = False,
 ) -> tuple[Path, dict, list[dict]]:
     """Run one evaluation pass and return the output path, metrics, and details."""
-    if enable_metadata_boost:
+    if use_hnsw and use_hybrid:
+        mode_label = "hnsw_hybrid"
+        results_path = HNSW_HYBRID_RESULTS_PATH
+    elif use_hnsw:
+        mode_label = "hnsw"
+        results_path = HNSW_RESULTS_PATH
+    elif enable_metadata_boost:
         mode_label = "metadata_boost"
         results_path = METADATA_BOOST_RESULTS_PATH
     elif enable_multi_index:
@@ -266,6 +282,7 @@ def _run_evaluation(
         metadata_boost_factor=metadata_boost_factor,
         enable_multi_index=enable_multi_index,
         index_name=index_name,
+        use_hnsw=use_hnsw,
     )
 
     cache_dir = os.environ.get("ARTIFACT_CACHE_DIR", "").strip() or str(
@@ -300,7 +317,11 @@ def _run_evaluation(
         for record in detailed_results:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    if enable_metadata_boost:
+    if use_hnsw and use_hybrid:
+        display_label = f"HNSW + Hybrid RRF (k={rrf_k})"
+    elif use_hnsw:
+        display_label = "HNSW-only"
+    elif enable_metadata_boost:
         display_label = f"Metadata boost hybrid (k={rrf_k}, boost={metadata_boost_factor})"
     elif enable_multi_index:
         if index_name:
@@ -324,26 +345,31 @@ def _run_evaluation(
     return results_path, metrics, detailed_results
 
 
-def _print_comparison_table(rows: list[tuple[str, dict]]) -> None:
+def _print_comparison_table(rows: list[tuple[str, dict]], *, use_hnsw: bool = False) -> None:
     """Print a formatted comparison table in the terminal."""
-    print("\n" + "=" * 70, flush=True)
-    print("Retrieval Improvement Comparison", flush=True)
-    print("=" * 70, flush=True)
+    width = 78
+    title = "Retrieval Improvement Comparison"
+    if use_hnsw:
+        title = "Retrieval Improvement Comparison (with HNSW)"
+    print("\n" + "=" * width, flush=True)
+    print(title, flush=True)
+    print("=" * width, flush=True)
     print(
-        f"{'Mode':<18} | {'Recall@5':<10} | {'Recall@10':<11} | {'MRR@10':<10} | {'Avg Latency':<13}",
+        f"{'Mode':<22} | {'Recall@5':<10} | {'Recall@10':<11} | {'MRR@10':<10} | {'Avg Latency':<13}",
         flush=True,
     )
-    print("-" * 70, flush=True)
+    width = 78
+    print("-" * width, flush=True)
     for label, metrics in rows:
         print(
-            f"{label:<18} | "
+            f"{label:<22} | "
             f"{metrics['recall@5']:<10} | "
             f"{metrics['recall@10']:<11} | "
             f"{metrics['mrr@10']:<10} | "
             f"{metrics['avg_latency_ms']:<13} ms",
             flush=True,
         )
-    print("=" * 70, flush=True)
+    print("=" * width, flush=True)
 
 
 def _compute_deltas(baseline_metrics: dict, comparison_metrics: dict) -> dict:
@@ -383,14 +409,24 @@ def _compare_all_modes() -> dict:
     metrics: dict[str, dict] = {}
     if DENSE_RESULTS_PATH.exists():
         metrics["dense_only"] = _load_existing_metrics(DENSE_RESULTS_PATH)
-    if HYBRID_RESULTS_PATH.exists():
+
+    # Prefer the canonical k=60 hybrid file; fall back to the legacy name.
+    hybrid_path = _hybrid_results_path(60)
+    if hybrid_path.exists():
+        metrics["hybrid_rrf"] = _load_existing_metrics(hybrid_path)
+    elif HYBRID_RESULTS_PATH.exists():
         metrics["hybrid_rrf"] = _load_existing_metrics(HYBRID_RESULTS_PATH)
+
     if ROUTED_RESULTS_PATH.exists():
         metrics["query_routed_hybrid"] = _load_existing_metrics(ROUTED_RESULTS_PATH)
     if METADATA_BOOST_RESULTS_PATH.exists():
         metrics["metadata_boost_hybrid"] = _load_existing_metrics(METADATA_BOOST_RESULTS_PATH)
     if MULTI_INDEX_RESULTS_PATH.exists():
         metrics["multi_index_hybrid"] = _load_existing_metrics(MULTI_INDEX_RESULTS_PATH)
+    if HNSW_RESULTS_PATH.exists():
+        metrics["hnsw_only"] = _load_existing_metrics(HNSW_RESULTS_PATH)
+    if HNSW_HYBRID_RESULTS_PATH.exists():
+        metrics["hnsw_hybrid"] = _load_existing_metrics(HNSW_HYBRID_RESULTS_PATH)
 
     label_map = {
         "dense_only": "Dense-only",
@@ -398,10 +434,20 @@ def _compare_all_modes() -> dict:
         "query_routed_hybrid": "Query routed hybrid",
         "metadata_boost_hybrid": "Metadata boost hybrid",
         "multi_index_hybrid": "Multi-index routed hybrid",
+        "hnsw_only": "HNSW-only",
+        "hnsw_hybrid": "HNSW + Hybrid RRF",
     }
     rows = [
         (label_map[key], metrics[key])
-        for key in ["dense_only", "hybrid_rrf", "query_routed_hybrid", "metadata_boost_hybrid", "multi_index_hybrid"]
+        for key in [
+            "dense_only",
+            "hybrid_rrf",
+            "query_routed_hybrid",
+            "metadata_boost_hybrid",
+            "multi_index_hybrid",
+            "hnsw_only",
+            "hnsw_hybrid",
+        ]
         if key in metrics
     ]
     _print_comparison_table(rows)
@@ -416,21 +462,19 @@ def _load_existing_metrics(path: Path) -> dict:
 
 
 def _compare_existing() -> int:
-    """Compare dense-only with the default hybrid result file."""
-    if not DENSE_RESULTS_PATH.exists() or not HYBRID_RESULTS_PATH.exists():
-        print(
-            "Error: both results_dense_only.jsonl and results_hybrid.jsonl must exist "
-            "before using --compare.",
-            flush=True,
-        )
+    """Compare all available result files and print a complete summary."""
+    metrics = _compare_all_modes()
+    if not metrics:
+        print("Error: no result files found to compare.", flush=True)
         return 1
-    dense_metrics = _load_existing_metrics(DENSE_RESULTS_PATH)
-    hybrid_metrics = _load_existing_metrics(HYBRID_RESULTS_PATH)
-    _print_comparison_table([("Dense-only", dense_metrics), ("Hybrid RRF", hybrid_metrics)])
+
     summary = _load_summary()
-    summary["metrics"]["dense_only"] = dense_metrics
-    summary["metrics"]["hybrid_rrf"] = hybrid_metrics
-    summary["deltas"]["dense_vs_hybrid_rrf"] = _compute_deltas(dense_metrics, hybrid_metrics)
+    for key, value in metrics.items():
+        summary["metrics"][key] = value
+    if "dense_only" in metrics and "hybrid_rrf" in metrics:
+        summary["deltas"]["dense_vs_hybrid_rrf"] = _compute_deltas(
+            metrics["dense_only"], metrics["hybrid_rrf"]
+        )
     _save_summary(summary)
     return 0
 
@@ -533,6 +577,36 @@ def main() -> int:
         _save_summary(summary)
         return 0
 
+    if args.hnsw and args.hybrid:
+        _, hnsw_hybrid_metrics, _ = _run_evaluation(
+            use_hybrid=True, rrf_k=args.rrf_k, use_hnsw=True
+        )
+        all_metrics = _compare_all_modes()
+        summary = _load_summary()
+        summary["metrics"]["hnsw_hybrid"] = hnsw_hybrid_metrics
+        if "dense_only" in all_metrics:
+            summary["deltas"]["hnsw_hybrid_vs_dense"] = _compute_deltas(
+                all_metrics["dense_only"], hnsw_hybrid_metrics
+            )
+        if "hybrid_rrf" in all_metrics:
+            summary["deltas"]["hnsw_hybrid_vs_hybrid_rrf"] = _compute_deltas(
+                all_metrics["hybrid_rrf"], hnsw_hybrid_metrics
+            )
+        _save_summary(summary)
+        return 0
+
+    if args.hnsw:
+        _, hnsw_metrics, _ = _run_evaluation(use_hybrid=False, use_hnsw=True)
+        all_metrics = _compare_all_modes()
+        summary = _load_summary()
+        summary["metrics"]["hnsw_only"] = hnsw_metrics
+        if "dense_only" in all_metrics:
+            summary["deltas"]["hnsw_vs_dense"] = _compute_deltas(
+                all_metrics["dense_only"], hnsw_metrics
+            )
+        _save_summary(summary)
+        return 0
+
     if args.hybrid:
         _run_evaluation(use_hybrid=True, rrf_k=args.rrf_k)
         return 0
@@ -554,6 +628,10 @@ def main() -> int:
     )
     print(
         f"\nOr run multi-index evaluation with: {Path(__file__).name} --multi-index",
+        flush=True,
+    )
+    print(
+        f"\nOr run HNSW evaluation with: {Path(__file__).name} --hnsw",
         flush=True,
     )
     return 0

@@ -35,6 +35,9 @@ class SearchConfig:
     enable_multi_index: bool = False
     index_name: str | None = None
 
+    # Phase 6: HNSW approximate-nearest-neighbor search
+    use_hnsw: bool = False
+
     @classmethod
     def from_retrieval_config(cls, config) -> "SearchConfig":
         """Build a ``SearchConfig`` from ``src.config.RetrievalConfig``."""
@@ -56,6 +59,7 @@ class SearchConfig:
             default_index=default_index,
             enable_multi_index=getattr(config, "enable_multi_index", False),
             index_name=default_index,
+            use_hnsw=getattr(config, "use_hnsw", False),
         )
 
     def to_hyperparameters(self) -> RetrievalHyperparameters:

@@ -22,11 +22,14 @@ import requests
 logger = logging.getLogger(__name__)
 
 REPO = "Slayer025/pubmed-graphrag-v2"
-TAG = "v2.0-artifacts"
-TITLE = "Phase 5 Artifacts"
-NOTES = "Multi-index embeddings (semantic, fixed, sentence) and graph CSVs for Phase 5 deployment."
+TAG = "v2.1-hnsw"
+TITLE = "Phase 6 HNSW Artifacts"
+NOTES = (
+    "Multi-index embeddings (semantic, fixed, sentence), graph CSVs, and "
+    "pre-built HNSW approximate-nearest-neighbor indexes for Phase 6 deployment."
+)
 
-# Order matches bootstrap_artifacts.py _CACHE_LOGICAL_PATHS.
+# Order matches bootstrap_artifacts.py _CACHE_LOGICAL_PATHS, with HNSW indexes appended.
 ASSETS: list[tuple[str, str]] = [
     ("data/chunks/chunks_semantic.jsonl.gz", "chunks_semantic.jsonl.gz"),
     ("data/chunks/chunks_fixed.jsonl.gz", "chunks_fixed.jsonl.gz"),
@@ -37,6 +40,13 @@ ASSETS: list[tuple[str, str]] = [
     ("data/graph/mentions.csv", "mentions.csv"),
     ("data/graph/has_chunk.csv", "has_chunk.csv"),
     ("data/graph/entities.csv", "entities.csv"),
+    ("data/hnsw/semantic_index.bin", "semantic_index.bin"),
+    ("data/hnsw/semantic_chunk_ids.json", "semantic_chunk_ids.json"),
+    ("data/hnsw/fixed_index.bin", "fixed_index.bin"),
+    ("data/hnsw/fixed_chunk_ids.json", "fixed_chunk_ids.json"),
+    ("data/hnsw/sentence_index.bin", "sentence_index.bin"),
+    ("data/hnsw/sentence_chunk_ids.json", "sentence_chunk_ids.json"),
+    ("data/hnsw/manifest.json", "manifest.json"),
 ]
 
 

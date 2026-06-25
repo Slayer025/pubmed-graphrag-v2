@@ -430,6 +430,11 @@ def main() -> int:
         _render_embedding_diagnostics(HF_HOME)
 
         with st.expander("🔍 Retrieval Strategy", expanded=True):
+            use_hnsw = st.checkbox(
+                "⚡ Enable HNSW Search",
+                value=False,
+                help="Uses pre-built HNSW approximate-nearest-neighbor indexes instead of exact NumPy search.",
+            )
             use_hybrid = st.checkbox(
                 "Enable Hybrid Retrieval",
                 value=False,
@@ -498,6 +503,7 @@ def main() -> int:
         "max_entity_degree": max_entity_degree,
         "alpha": alpha,
         "max_results": max_results,
+        "use_hnsw": use_hnsw,
         "use_hybrid": use_hybrid,
         "enable_query_routing": enable_query_routing,
         "enable_metadata_boost": enable_metadata_boost,
@@ -543,6 +549,8 @@ def main() -> int:
         _render_query_understanding(classification, strategy)
 
         st.subheader(f"Retrieved context ({len(results)} chunks)")
+        if search_config.use_hnsw:
+            st.caption("⚡ HNSW backend enabled")
         if search_config.enable_metadata_boost:
             st.caption("🔬 Metadata boost applied")
         for rank, result in enumerate(results, start=1):

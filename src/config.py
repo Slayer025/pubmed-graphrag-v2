@@ -111,6 +111,9 @@ class RetrievalConfig:
     default_index: str = "semantic"
     enable_multi_index: bool = False
 
+    # Phase 6: HNSW approximate-nearest-neighbor search
+    use_hnsw: bool = False
+
     # Final result cap
     max_results: int = 20
 

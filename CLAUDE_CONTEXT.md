@@ -1,8 +1,8 @@
 # PubMed GraphRAG — Claude Context
 
 **Last updated:** 2026-06-25  
-**Current state:** Phases 1–5 complete.  
-**Most recent commit:** `Phase 5-Multiple Embedding Indexes`
+**Current state:** Phases 1–6 complete.  
+**Most recent commit:** `Phase 6: HNSW Search`
 
 This file gives an AI assistant everything needed to resume work on the PubMed GraphRAG project without re-reading the entire repository.
 
@@ -25,8 +25,8 @@ This file gives an AI assistant everything needed to resume work on the PubMed G
 ## Deployment
 - URL: https://pubmed-graphrag-kamfpkughsfmstpcrv8r23.streamlit.app/
 - Repository: https://github.com/Slayer025/pubmed-graphrag-v2
-- Release (artifacts): https://github.com/Slayer025/pubmed-graphrag-v2/releases/tag/v2.0-artifacts
-- `ARTIFACT_BASE_URL`: `https://github.com/Slayer025/pubmed-graphrag-v2/releases/download/v2.0-artifacts`
+- Release (artifacts): https://github.com/Slayer025/pubmed-graphrag-v2/releases/tag/v2.1-hnsw
+- `ARTIFACT_BASE_URL`: `https://github.com/Slayer025/pubmed-graphrag-v2/releases/download/v2.1-hnsw`
 - Secrets: `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `HF_API_TOKEN`, `ARTIFACT_BASE_URL`
 ---
 ## Project Goal
@@ -167,10 +167,11 @@ pubmed-graphrag/
 ### ✅ Phase 5 — Multiple Embedding Indexes (Chunking Strategies)
 
 **What was built:**
-- `scripts/build_indexes.py` — offline generator that builds two lightweight, regex-only chunking strategies:
+- `scripts/build_indexes.py` and `scripts/build_hnsw_indexes.py` — offline generators that build chunking/embedding artifacts and pre-built HNSW approximate-nearest-neighbor indexes.
   - `fixed`: 500-character windows with 50-character overlap.
   - `sentence`: regex split on `(?<=[.?!])\s+(?=[A-Z0-9])`.
 - `src/infrastructure/vector_store/multi_index_vector_store.py` — registry adapter wrapping multiple `VectorStore` indexes keyed by name (`semantic`, `fixed`, `sentence`).
+- `src/infrastructure/vector_store/hnsw_vector_store.py` — HNSW-backed `VectorStore` adapter that uses hnswlib for approximate neighbor lookup and re-scores candidates with exact cosine similarity from the original embeddings.
 - `src/infrastructure/vector_store/numpy_vector_store.py` and `src/application/ports.py` — `VectorStore.search(..., index_name=None)` extended for multi-index routing.
 - `src/application/use_cases/vector_search.py` — forwards `index_name` to the vector store.
 - `src/domain/services/strategy_router.py` — maps query types to preferred indexes:
@@ -178,8 +179,9 @@ pubmed-graphrag/
   - `relationship` / `mechanism` → `sentence`
   - `fixed` available for manual override and A/B testing.
 - `src/application/use_cases/retrieve_documents.py` — extracts the routed `index_name` and passes it to vector search; logs `INDEX ROUTING: index=...`.
-- `src/bootstrap/__init__.py` — opportunistically loads all available indexes at bootstrap; falls back to a single `NumpyVectorStore` when only semantic exists.
+- `src/bootstrap/__init__.py` — opportunistically loads all available indexes at bootstrap. When `use_hnsw=True` and a pre-built HNSW `.bin` exists, loads `HnswVectorStore`; otherwise falls back to `NumpyVectorStore`.
 - `src/interfaces/streamlit/demo.py` — sidebar checkbox **“Enable Multi-Index Routing”** and manual dropdown **“Manual index override”**; selected index shown in the **“🧠 Query Understanding”** expander.
+- `src/config.py` / `src/application/dto/search_config.py` — added `use_hnsw: bool = False` flag.
 - `evaluation/run_eval.py` — `--multi-index` and `--index-name` flags; writes `evaluation/results_multi_index.jsonl`.
 
 **Proof:**
@@ -202,6 +204,36 @@ pubmed-graphrag/
   INDEX ROUTING: index=sentence
   ```
 
+### ✅ Phase 6 — HNSW Search
+
+**What was built:**
+- `scripts/build_hnsw_indexes.py` — offline builder that creates hnswlib indexes for `semantic`, `fixed`, and `sentence` strategies (`M=16`, `ef_construction=200`, `ef_search=100`) and writes `.bin` + `_chunk_ids.json` + `manifest.json` to `data/hnsw/`.
+- `src/infrastructure/vector_store/hnsw_vector_store.py` — implements the `VectorStore` port using hnswlib, then re-scores candidates with exact cosine similarity from the original embedding matrix.
+- `src/bootstrap/__init__.py` — per-index HNSW/NumPy selection: uses `HnswVectorStore` when `use_hnsw=True` and the `.bin` exists, otherwise falls back to `NumpyVectorStore`.
+- `src/config.py` and `src/application/dto/search_config.py` — added `use_hnsw: bool = False` flag with full mapping.
+- `src/interfaces/streamlit/demo.py` — sidebar checkbox **"⚡ Enable HNSW Search"** under "🔍 Retrieval Strategy", passes `use_hnsw` to `SearchConfig`, and shows `⚡ HNSW backend enabled` caption when active.
+- `evaluation/run_eval.py` — `--hnsw` and `--hnsw --hybrid` flags; writes `results_hnsw.jsonl` and `results_hnsw_hybrid.jsonl`; comparison table includes HNSW modes.
+- GitHub Release `v2.1-hnsw` uploaded with all 16 artifacts (9 Phase 5 + 7 HNSW).
+
+**Proof:**
+- Generated artifacts:
+  - `data/hnsw/semantic_index.bin` + `semantic_chunk_ids.json` (15,556 elements)
+  - `data/hnsw/fixed_index.bin` + `fixed_chunk_ids.json` (20,653 elements)
+  - `data/hnsw/sentence_index.bin` + `sentence_chunk_ids.json` (5,417 elements)
+  - `data/hnsw/manifest.json`
+- Evaluation results (40 queries):
+  ```text
+  Mode                   | Recall@5 | Recall@10 | MRR@10  | Avg Latency
+  Dense-only             | 0.025    | 0.05      | 0.0098  | 1426.86 ms
+  Hybrid RRF             | 0.05     | 0.1       | 0.019   | 1297.55 ms
+  Multi-index routed     | 0.05     | 0.1       | 0.019   | 635.24 ms
+  HNSW-only              | 0.025    | 0.05      | 0.0098  | 1205.93 ms
+  HNSW + Hybrid RRF      | 0.05     | 0.1       | 0.019   | 1263.91 ms
+  ```
+- HNSW preserves exact NumPy recall while improving latency by ~15.5% in dense-only mode and ~2.6% in hybrid mode.
+- All 106 tests pass (99 original + 7 new HNSW unit tests).
+- Streamlit Cloud artifact URL updated to `v2.1-hnsw`.
+
 ---
 
 ## Key Config Flags
@@ -216,6 +248,7 @@ pubmed-graphrag/
 | `default_index` | `RetrievalConfig` / `SearchConfig` | `semantic` | Default vector index name |
 | `enable_multi_index` | `RetrievalConfig` / `SearchConfig` | `False` | Enable index routing / multiple indexes |
 | `index_name` | `SearchConfig` | `None` | Manual index override (semantic, fixed, sentence) |
+| `use_hnsw` | `RetrievalConfig` / `SearchConfig` | `False` | Use pre-built HNSW approximate-nearest-neighbor indexes |
 
 ---
 
@@ -261,6 +294,8 @@ streamlit run scripts/demo.py
 # Run evaluation with flags
 python evaluation/run_eval.py [flags]
 python evaluation/run_eval.py --multi-index --hybrid  # Phase 5 multi-index routing
+python evaluation/run_eval.py --hnsw                  # Phase 6 HNSW-only
+python evaluation/run_eval.py --hnsw --hybrid           # Phase 6 HNSW + hybrid
 
 # Commit changes
 git add .
@@ -279,9 +314,10 @@ git push origin main  # or push to https://github.com/Slayer025/pubmed-graphrag-
 - ✅ Comprehensive evaluation harness
 - ✅ Professional UI with organized controls
 - ✅ Robust error handling
-- ✅ All 99 tests passing
+- ✅ All 99 tests passing (now 106 with HNSW tests)
 - ✅ Deployed to Streamlit Cloud
 - ✅ Multiple embedding indexes (semantic / fixed / sentence) with query-driven routing
+- ✅ HNSW approximate-nearest-neighbor search with exact-score re-ranking
 
 ---
 

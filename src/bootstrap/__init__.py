@@ -33,6 +33,7 @@ from src.infrastructure.retrievers.bm25_retriever import BM25Retriever
 from src.infrastructure.storage.artifact_loader import LoadedArtifacts
 from src.infrastructure.storage.chunk_repository import InMemoryChunkRepository
 from src.infrastructure.storage.pure_build import pure_build_guard
+from src.infrastructure.vector_store.hnsw_vector_store import HnswVectorStore
 from src.infrastructure.vector_store.multi_index_vector_store import MultiIndexVectorStore
 from src.infrastructure.vector_store.numpy_vector_store import NumpyVectorStore
 from src.llm_client import create_llm_client
@@ -95,6 +96,66 @@ def _load_single_index(
     return NumpyVectorStore(chunks, normalize_embeddings(embeddings))
 
 
+def _load_hnsw_index(
+    index_name: str,
+    base_path: Path,
+    ef_search: int = 100,
+) -> HnswVectorStore:
+    """Load a single HNSW index plus its sidecar data.
+
+    Args:
+        index_name: Identifier used for the file prefix (semantic, fixed, sentence).
+        base_path: Directory containing the HNSW ``.bin`` and ``.json`` sidecars.
+        ef_search: Query-time HNSW accuracy parameter.
+
+    Returns:
+        An ``HnswVectorStore`` backed by the persisted index.
+
+    Raises:
+        FileNotFoundError: If the HNSW ``.bin`` file is missing.
+    """
+    hnsw_dir = base_path / "data/hnsw"
+    embeddings_dir = base_path / "data/embeddings"
+    index_file = hnsw_dir / f"{index_name}_index.bin"
+    chunk_ids_file = hnsw_dir / f"{index_name}_chunk_ids.json"
+    embeddings_file = embeddings_dir / f"{index_name}_embeddings.npy"
+    return HnswVectorStore(
+        str(index_file),
+        str(chunk_ids_file),
+        str(embeddings_file),
+        ef_search=ef_search,
+    )
+
+
+def _build_single_vector_store(
+    index_name: str,
+    chunks_path: Path,
+    embeddings_path: Path,
+    hnsw_base_path: Path,
+    use_hnsw: bool,
+    ef_search: int,
+    embedding_dim: int,
+) -> VectorStore:
+    """Build one named vector store, preferring HNSW when enabled/available."""
+    hnsw_index_path = hnsw_base_path / "data/hnsw" / f"{index_name}_index.bin"
+    if use_hnsw and hnsw_index_path.exists():
+        try:
+            store = _load_hnsw_index(index_name, hnsw_base_path, ef_search=ef_search)
+            logger.info("Loaded %s index with HNSW", index_name)
+            return store
+        except Exception as exc:
+            logger.warning(
+                "Failed to load HNSW index for %s; falling back to NumPy: %s",
+                index_name,
+                exc,
+            )
+    return _load_single_index(
+        str(chunks_path),
+        str(embeddings_path),
+        embedding_dim,
+    )
+
+
 def _build_vector_store(
     config: AppConfig,
     artifacts: LoadedArtifacts,
@@ -107,17 +168,34 @@ def _build_vector_store(
     returned for backwards compatibility and minimal memory use. When multiple
     indexes are present, they are wrapped in a ``MultiIndexVectorStore`` with
     ``semantic`` as the default.
+
+    Phase 6: when ``retrieval.use_hnsw`` is ``True`` and a pre-built HNSW
+    ``.bin`` exists for an index, ``HnswVectorStore`` is used instead of
+    ``NumpyVectorStore``. Missing HNSW files fall back to the NumPy store so
+    the pipeline remains robust on ephemeral environments.
     """
     cfg = config or AppConfig.default()
-
-    semantic_store = NumpyVectorStore(artifacts.chunks, artifacts.embeddings)
-    indexes: dict[str, VectorStore] = {"semantic": semantic_store}
 
     # Additional indexes are expected in the artifact cache directory, which is
     # where bootstrap_artifacts() materializes them (locally or from a release).
     from src.bootstrap.bootstrap_artifacts import default_cache_dir
 
     cache_root = Path(default_cache_dir()).resolve()
+    hnsw_base_path = Path("data").resolve()
+    use_hnsw = cfg.retrieval.use_hnsw
+    ef_search = 100  # keep in sync with scripts/build_hnsw_indexes.py defaults
+
+    semantic_store = _build_single_vector_store(
+        "semantic",
+        cache_root / "data/chunks/chunks_semantic.jsonl.gz",
+        cache_root / "data/embeddings/semantic_embeddings.npy",
+        hnsw_base_path,
+        use_hnsw,
+        ef_search,
+        cfg.embedding.embedding_dim,
+    )
+    indexes: dict[str, VectorStore] = {"semantic": semantic_store}
+
     optional_indexes = [
         ("fixed", cache_root / "data/chunks/chunks_fixed.jsonl.gz", cache_root / "data/embeddings/fixed_embeddings.npy"),
         ("sentence", cache_root / "data/chunks/chunks_sentence.jsonl.gz", cache_root / "data/embeddings/sentence_embeddings.npy"),
@@ -130,9 +208,13 @@ def _build_vector_store(
             )
             continue
         try:
-            indexes[name] = _load_single_index(
-                str(chunks_path),
-                str(embeddings_path),
+            indexes[name] = _build_single_vector_store(
+                name,
+                chunks_path,
+                embeddings_path,
+                hnsw_base_path,
+                use_hnsw,
+                ef_search,
                 cfg.embedding.embedding_dim,
             )
             logger.info("Loaded %s index", name)
