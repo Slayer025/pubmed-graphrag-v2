@@ -174,11 +174,10 @@ def _build_vector_store(
                 )
                 logger.info("Loaded HNSW store for index=%s", name)
             except Exception as exc:
-                logger.warning(
-                    "Failed to load HNSW store for index=%s: %s",
+                logger.info(
+                    "HNSW store unavailable for index=%s: %s (falling back to NumPy)",
                     name,
                     exc,
-                    exc_info=True,
                 )
 
     default_index = cfg.retrieval.default_index

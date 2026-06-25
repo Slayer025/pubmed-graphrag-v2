@@ -6,7 +6,6 @@ def configure_environment() -> None:
     import os
 
     os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
-    os.environ.setdefault("TRANSFORMERS_CACHE", "/tmp/hf_cache/transformers")
     os.environ.setdefault("TORCH_HOME", "/tmp/torch_cache")
     os.environ.setdefault("HF_DATASETS_CACHE", "/tmp/hf_cache/datasets")
     os.environ.setdefault("HF_HUB_CACHE", "/tmp/hf_cache/hub")
