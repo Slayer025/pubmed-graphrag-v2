@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_TIMEOUT_SECONDS = 30
-DEFAULT_HF_API_URL = "https://api-inference.huggingface.co/models"
+DEFAULT_HF_API_URL = "https://router.huggingface.co/hf-inference/models"
 DEFAULT_REMOTE_RETRIES = 3
 DEFAULT_REMOTE_BACKOFF_SECONDS = 1.0
 
@@ -200,7 +200,7 @@ class RemoteEmbeddingClient:
 
     def _huggingface_embed(self, texts: list[str]) -> list[list[float]]:
         """Call the HuggingFace Inference API for embeddings."""
-        url = f"{DEFAULT_HF_API_URL}/{self._model_name}"
+        url = f"{DEFAULT_HF_API_URL}/{self._model_name}/pipeline/feature-extraction"
         headers: dict[str, str] = {}
         if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
@@ -212,7 +212,7 @@ class RemoteEmbeddingClient:
                 response = client.post(
                     url,
                     headers=headers,
-                    json={"inputs": texts, "options": {"wait_for_model": True}},
+                    json={"inputs": texts},
                 )
                 response.raise_for_status()
                 payload = response.json()
