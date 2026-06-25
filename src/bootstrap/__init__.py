@@ -149,6 +149,12 @@ def _build_named_vector_stores(
     )
 
     hnsw_index_path = hnsw_base_path / "data/hnsw" / f"{index_name}_index.bin"
+    logger.info(
+        "HNSW FILE CHECK: index=%s, path=%s, exists=%s",
+        index_name,
+        hnsw_index_path,
+        hnsw_index_path.exists(),
+    )
     hnsw_store: HnswVectorStore | None = None
     if hnsw_index_path.exists():
         try:
@@ -159,6 +165,7 @@ def _build_named_vector_stores(
                 "Failed to load HNSW index for %s; using NumPy only: %s",
                 index_name,
                 exc,
+                exc_info=True,
             )
     else:
         logger.info("No HNSW index found for %s; using NumPy only", index_name)
@@ -252,10 +259,12 @@ def _build_vector_store(
 
     loaded_hnsw = sorted(hnsw_stores)
     logger.info(
-        "Vector store: switchable with indexes=%s, hnsw=%s, default=%s",
+        "BOOTSTRAP VECTOR STORE: switchable with indexes=%s, hnsw=%s, default=%s, "
+        "hnsw_instances=%s",
         sorted(numpy_stores),
         loaded_hnsw,
         default_index,
+        {k: type(v).__name__ for k, v in hnsw_stores.items()},
     )
     return switchable
 

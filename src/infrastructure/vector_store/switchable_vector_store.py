@@ -44,6 +44,13 @@ class SwitchableVectorStore:
         self.last_backend: str | None = None
         self.last_index: str | None = None
 
+        logger.info(
+            "SWITCHABLE INIT: hnsw_stores=%s, numpy_stores=%s, default=%s",
+            list(self.hnsw_stores.keys()),
+            list(self.numpy_stores.keys()),
+            self.default_index,
+        )
+
         if self.default_index not in self.numpy_stores:
             available = ", ".join(sorted(self.numpy_stores))
             raise ValueError(
@@ -79,7 +86,16 @@ class SwitchableVectorStore:
             )
 
         self.last_index = name
-        if use_hnsw and name in self.hnsw_stores:
+        hnsw_available = name in self.hnsw_stores
+        logger.info(
+            "SWITCHABLE SEARCH: use_hnsw=%s, index=%s, hnsw_available=%s, "
+            "hnsw_keys=%s",
+            use_hnsw,
+            name,
+            hnsw_available,
+            list(self.hnsw_stores.keys()),
+        )
+        if use_hnsw and hnsw_available:
             self.last_backend = "hnsw"
             logger.info("VECTOR STORE: using hnsw for index=%s", name)
             return self.hnsw_stores[name].search(query_vector, top_k)
